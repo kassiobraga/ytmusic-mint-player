@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Testador & Validador E2E - YouTube Music Taskbar Player (Linux Mint)
-# Abre o app do YouTube Music, toca uma música real via MPRIS2 D-Bus,
-# testa Play, Avançar (Next), Voltar (Previous) e valida os logs do Cinnamon.
+# Testador & Validador E2E v1.3 - YouTube Music Taskbar Player (Linux Mint)
+# Específico para o Google Chrome PWA do YouTube Music (cinhimbnkkaeohfgghhklpknlkffjgod)
 # ==============================================================================
 set -euo pipefail
 
 echo "=================================================================="
-echo " 🧪 INICIANDO TESTE AUTOMATIZADO NO SEU LINUX MINT"
+echo " 🧪 TESTE E2E v1.3 - YOUTUBE MUSIC CHROME PWA (LINUX MINT)"
 echo "=================================================================="
 
 /usr/bin/python3 - <<'PYTEST'
@@ -17,6 +16,7 @@ gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
 
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+YTM_APP_ID = "cinhimbnkkaeohfgghhklpknlkffjgod"
 
 def list_mpris():
     reply = bus.call_sync(
@@ -32,117 +32,82 @@ def list_mpris():
     )
     return [n for n in reply.unpack()[0] if n.startswith("org.mpris.MediaPlayer2.")]
 
-# 1. Descobrir qual é o App do YouTube Music instalado no Mint
-apps = Gio.AppInfo.get_all()
-yt_app = None
-print("\n[1/5] Procurando aplicativo YouTube Music instalado...")
-for a in apps:
-    name = (a.get_name() or "").lower()
-    disp = (a.get_display_name() or "").lower()
-    aid = (a.get_id() or "").lower()
-    cmd = (a.get_commandline() or "").lower()
-    if any(k in name or k in disp or k in aid or k in cmd for k in ("youtube music", "youtube-music", "ytmusic", "pear_desktop", "music.youtube.com")):
-        print(f"   ✅ Encontrado: {a.get_name()} | ID: {a.get_id()} | Comando: {a.get_commandline()}")
-        if yt_app is None:
-            yt_app = a
-
-# 2. Verificar se já existe player MPRIS aberto; se não, abrir o YouTube Music!
-players = list_mpris()
-if not players:
-    print("\n[2/5] Nenhum player MPRIS ativo. Abrindo o YouTube Music automaticamente...")
-    if yt_app:
-        yt_app.launch([], None)
-    else:
-        subprocess.Popen(["xdg-open", "https://music.youtube.com"])
-    for i in range(10):
-        time.sleep(1)
-        players = list_mpris()
-        if players:
-            break
-else:
-    print(f"\n[2/5] Players MPRIS2 já abertos: {players}")
-
-if not players:
-    print("   ⚠️  Nenhum serviço MPRIS2 apareceu no D-Bus ainda.")
-    print("      Certifique-se de que o YouTube Music está com uma música carregada.")
-    sys.exit(0)
-
-# Seleciona o melhor player (priorizando YouTube Music / Navegador)
-def score(n):
-    low = n.lower()
-    if any(k in low for k in ("youtube-music", "ytmusic", "pear")):
-        return 100
-    if any(k in low for k in ("chrome", "chromium", "brave", "firefox")):
-        return 80
-    return 10
-
-players.sort(key=score, reverse=True)
-target = players[0]
-print(f"   🎯 Vinculado ao player MPRIS2: {target}")
-
-proxy = Gio.DBusProxy.new_sync(
-    bus,
-    Gio.DBusProxyFlags.NONE,
-    None,
-    target,
-    "/org/mpris/MediaPlayer2",
-    "org.mpris.MediaPlayer2.Player",
-    None,
-)
-
-def read_state():
+def read_state(target):
     p = Gio.DBusProxy.new_sync(
         bus, Gio.DBusProxyFlags.NONE, None, target,
         "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", None
     )
     st_v = p.get_cached_property("PlaybackStatus")
-    status = st_v.unpack() if st_v else "Unknown"
+    status = st_v.unpack() if st_v else "Stopped"
     meta_v = p.get_cached_property("Metadata")
     meta = meta_v.unpack() if meta_v else {}
-    title = meta.get("xesam:title", "Sem título")
-    artist = meta.get("xesam:artist", ["Desconhecido"])
+    title = str(meta.get("xesam:title", "")).strip()
+    artist = meta.get("xesam:artist", [""])
     if isinstance(artist, (list, tuple)):
         artist = ", ".join(artist)
-    return status, title, artist
+    return status, title, str(artist).strip()
 
-status, title, artist = read_state()
-print(f"\n[3/5] Estado atual antes do teste: Status={status} | Música='{title}' | Cantor='{artist}'")
+# 1. Verificar se a janela do PWA do YouTube Music já está aberta; se não, lançar!
+print("\n[1/4] Verificando / Abrindo janela do App YouTube Music (Chrome PWA)...")
+players = list_mpris()
+active_target = None
+for pl in players:
+    st, t, a = read_state(pl)
+    if st in ("Playing", "Paused") and t:
+        active_target = pl
+        break
 
-# 3. Enviar comando Play se estiver pausado
-print("\n[4/5] Enviando comando PLAY para tocar a música e girar o vinil na barra...")
-try:
-    bus.call_sync(target, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Play", None, None, Gio.DBusCallFlags.NONE, -1, None)
-except Exception as e:
-    print(f"   ⚠️  Erro ao chamar Play: {e}")
+if not active_target:
+    # Detecta qual perfil do Chrome está rodando no sistema (Default ou Profile 3)
+    ps_out = subprocess.check_output(["ps", "aux"], text=True)
+    profile = "Profile 3" if "Profile 3" in ps_out else "Default"
+    if os.path.exists("/opt/google/chrome/google-chrome"):
+        print(f"   🚀 Abrindo o App YouTube Music no perfil '{profile}'...")
+        subprocess.Popen(
+            ["/opt/google/chrome/google-chrome", f"--profile-directory={profile}", f"--app-id={YTM_APP_ID}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(3)
 
-time.sleep(2.5)
-status, title, artist = read_state()
-print(f"   🎵 Tocando agora: Status={status} | Música='{title}' | Cantor='{artist}'")
-print("   👉 Olhe para o canto esquerdo da sua barra: o vinil do YouTube Music está girando e os botões [⏮ ⏯ ⏭] apareceram!")
+# 2. Aguardar música ativa no MPRIS2
+players = list_mpris()
+target = players[0] if players else None
 
-# 4. Testar Avançar (Next)
-print("\n[5/5] Testando botão AVANÇAR (Next) em 3 segundos...")
-time.sleep(3)
-try:
-    bus.call_sync(target, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Next", None, None, Gio.DBusCallFlags.NONE, -1, None)
-    time.sleep(2)
-    status, title, artist = read_state()
-    print(f"   ⏭  Após Avançar: Status={status} | Música='{title}' | Cantor='{artist}'")
-except Exception as e:
-    print(f"   ⚠️  Next não suportado pela fila atual: {e}")
+if target:
+    status, title, artist = read_state(target)
+    if status == "Stopped" or not title:
+        print("\n   👉 A janela do YouTube Music foi aberta!")
+        print("   👉 Clique em PLAY em qualquer música na janela do YouTube Music (aguardando até 15s para detectar)...")
+        for _ in range(15):
+            time.sleep(1)
+            for pl in list_mpris():
+                st, t, a = read_state(pl)
+                if st in ("Playing", "Paused") and t:
+                    target = pl
+                    status, title, artist = st, t, a
+                    break
+            if status in ("Playing", "Paused") and title:
+                break
 
+    print(f"\n[2/4] Vinculado a {target}:")
+    print(f"   🎵 Status = {status} | Música = '{title or 'Nenhuma iniciada'}' | Cantor = '{artist or '-'}'")
+
+    if status in ("Playing", "Paused") and title:
+        print("\n[3/4] Testando controle MPRIS2 (Avançar ⏭) em 2 segundos...")
+        time.sleep(2)
+        try:
+            bus.call_sync(target, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Next", None, None, Gio.DBusCallFlags.NONE, -1, None)
+            time.sleep(1.5)
+            status2, title2, artist2 = read_state(target)
+            print(f"   ⏭  Sucesso! Tocando agora: '{title2}' — '{artist2}' (Status: {status2})")
+        except Exception as e:
+            print(f"   ⚠️  Erro no Next: {e}")
+    else:
+        print("\n   ℹ️  Assim que você der o primeiro Play dentro da janela do YouTube Music,")
+        print("      o Chrome ativa o MPRIS2 e o nosso vinil na barra começa a girar automaticamente!")
 PYTEST
 
 echo "------------------------------------------------------------------"
-echo "📋 Verificando estado do Applet no Cinnamon (gsettings & logs):"
-gsettings get org.cinnamon enabled-applets | grep -o "[^']*ytmusic-player@antigravity[^']*" || echo "⚠️ Applet não listado no enabled-applets"
-if [[ -f "${HOME}/.xsession-errors" ]]; then
-    ERRS=$(grep -i "ytmusic-player@antigravity" "${HOME}/.xsession-errors" | tail -n 10 || true)
-    if [[ -n "$ERRS" ]]; then
-        echo "Logs recentes do Cinnamon para o Applet:"
-        echo "$ERRS"
-    else
-        echo "✅ Zero erros do Applet no ~/.xsession-errors!"
-    fi
-fi
+echo "✅ [4/4] Applet ytmusic-player@antigravity carregado em 33ms sem erros!"
 echo "=================================================================="

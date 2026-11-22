@@ -1,18 +1,18 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid Vinyl v1.2) - Cinnamon Applet
+ * YouTube Music Taskbar Player (Hybrid Vinyl v1.3) - Cinnamon Applet
  * UUID: ytmusic-player@antigravity
  *
- * Novidades v1.2:
- *  1. Auto-Collapse Inteligente: Quando não estiver tocando música (ou quando
- *     o player estiver fechado), a barrinha minimiza automaticamente deixando
- *     APENAS o ícone oficial do YouTube Music visível na barra. Assim que
- *     começa a tocar, os botões ⏮ ⏯ ⏭ aparecem suavemente!
- *  2. Auto-Discovery do App YouTube Music instalado no Linux Mint:
- *     Vasculha Gio.AppInfo.get_all() procurando o app do YouTube Music
- *     (WebApp do Mint, Pear Desktop, th-ch, Flatpak, Chrome App) e abre/foca
- *     a janela dele ao clicar no ícone do YouTube Music, vinculando-se
- *     automaticamente via MPRIS2 D-Bus assim que ele iniciar.
- *  3. Compatibilidade Total com Linux Mint (Cinnamon 5.x e 6.x).
+ * Otimizado especificamente para o Google Chrome PWA do YouTube Music
+ * (app-id: cinhimbnkkaeohfgghhklpknlkffjgod) no Linux Mint Cinnamon:
+ *  - Detecta janelas abertas do PWA pelo WM_CLASS (crx_cinhimbnkkaeohfgghhklpknlkffjgod)
+ *    ou abre diretamente o PWA do YouTube Music no perfil ativo do Chrome.
+ *  - Quando o Chrome reporta Status=Stopped (nenhuma música iniciada na sessão),
+ *    clicar no ícone ou em Play abre/foca a janela do PWA e guia para o primeiro Play;
+ *    assim que a sessão MediaSession do Chrome inicia, os botões ⏮ ⏯ ⏭ controlam
+ *    tudo via MPRIS2 D-Bus (`org.mpris.MediaPlayer2.chromium.instance*`).
+ *  - Auto-Collapse inteligente: fica minimizado só com o ícone do YouTube Music
+ *    quando nenhuma música foi iniciada (`Stopped`), e expande os botões `⏮ ⏯ ⏭`
+ *    assim que uma música está ativa (`Playing` ou `Paused`).
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -31,6 +31,7 @@ const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
 const DBUS_NAME = "org.freedesktop.DBus";
 const DBUS_PATH = "/org/freedesktop/DBus";
+const YTM_CHROME_APP_ID = "cinhimbnkkaeohfgghhklpknlkffjgod";
 
 class YTMusicHybridApplet extends Applet.Applet {
     constructor(metadata, orientation, panelHeight, instanceId) {
@@ -47,6 +48,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instanceId);
         this.settings.bind("icon-animation", "iconAnimation", () => this._updateAnimationState());
         this.settings.bind("collapse-when-idle", "collapseWhenIdle", () => this._updateBarCollapseState());
+        this.settings.bind("chrome-profile", "chromeProfile");
         this.settings.bind("player-filter", "playerFilter", () => this._discoverPlayers());
         this.settings.bind("hover-delay-ms", "hoverDelayMs");
         this.settings.bind("hover-close-grace-ms", "hoverCloseGraceMs");
@@ -58,12 +60,13 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._propsSignalId = 0;
         this._dbusSignalId = 0;
 
+        this._playbackStatus = "Stopped";
         this._isPlaying = false;
         this._hasActiveTrack = false;
         this._trackId = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
         this._title = "YouTube Music";
-        this._artist = "Clique no ícone para abrir o YouTube Music";
-        this._album = "Pronto para vincular automaticamente";
+        this._artist = "Clique para abrir o YouTube Music";
+        this._album = "Inicie uma música para ativar o vinil";
         this._artUrl = "";
         this._cachedArtPath = null;
         this._durationUs = 0;
@@ -89,7 +92,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 1. BARRA DE TAREFAS (AUTO-COLLAPSE: SÓ ÍCONE QUANDO PARADO, +3 BOTÕES TOCANDO)
+     * 1. BARRA DE TAREFAS (AUTO-COLLAPSE: SÓ ÍCONE QUANDO PARADO, +3 BOTÕES ATIVO)
      * ====================================================================== */
     _buildPanelUI() {
         this.actor.set_style_class_name("applet-box");
@@ -104,7 +107,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             y_align: Clutter.ActorAlign.CENTER
         });
 
-        // Ícone oficial do YouTube Music (SVG com sulcos de vinil)
         const iconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
         const gicon = new Gio.FileIcon({ file: Gio.File.new_for_path(iconPath) });
 
@@ -122,10 +124,8 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
-        // Clicar no ícone do YouTube Music abre/foca o app instalado e já vincula!
         this._ytmIconBtn.connect("clicked", () => this._raiseOrLaunchYTMusic());
 
-        // Container retrátil dos controles (Divisor + Voltar + Play/Pause + Avançar)
         this._controlsBox = new St.BoxLayout({
             style_class: "ytm-panel-controls-box",
             vertical: false,
@@ -181,7 +181,6 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         this.actor.add_actor(this._panelCard);
 
-        // Eventos de Hover na Barra e Scroll de Volume
         this.actor.connect("enter-event", () => {
             this._pointerInPanel = true;
             this._scheduleHoverOpen();
@@ -197,15 +196,16 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     _updateBarCollapseState() {
-        const mode = this.collapseWhenIdle || "when-not-playing";
+        const mode = this.collapseWhenIdle || "when-no-track";
         let showControls = true;
 
         if (mode === "when-not-playing") {
-            // Mostra os botões quando estiver tocando música!
-            // Quando não estiver tocando nada, minimiza deixando só o ícone do YouTube Music
+            // Só mostra os botões quando estiver efetivamente Playing
             showControls = this._isPlaying;
-        } else if (mode === "when-closed") {
-            showControls = (this._activeBusName !== null);
+        } else if (mode === "when-no-track" || mode === "when-closed") {
+            // Minimiza (fica só o ícone do YouTube Music) quando não há música ativa (Stopped)
+            // e mantém os botões [⏮ ⏯ ⏭] visíveis quando está Playing ou Paused para você poder dar Play de novo!
+            showControls = (this._isPlaying || (this._playbackStatus === "Paused" && this._hasActiveTrack));
         } else {
             showControls = true;
         }
@@ -244,7 +244,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             reactive: true
         });
 
-        // --- Linha Superior: Disco de Vinil Girando + Metadados da Música ---
         const headerRow = new St.BoxLayout({
             style_class: "ytm-popup-header-row",
             vertical: false,
@@ -330,7 +329,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         headerRow.add_actor(this._vinylWrapper);
         headerRow.add_actor(metaCol);
 
-        // --- Linha de Progresso Interativa ---
         const progressRow = new St.BoxLayout({
             style_class: "ytm-progress-row",
             vertical: false,
@@ -368,7 +366,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         progressRow.add_actor(this._progressTrack);
         progressRow.add_actor(this._totalTimeLabel);
 
-        // --- Rodapé da Janelinha ---
         const footerRow = new St.BoxLayout({
             style_class: "ytm-popup-footer",
             vertical: false,
@@ -548,7 +545,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 5. INTEGRAÇÃO D-BUS MPRIS2 + AUTO-VINCULAÇÃO A QUALQUER PLAYER ATIVO
+     * 5. INTEGRAÇÃO D-BUS MPRIS2 (CHROME PWA & APPS NATIVOS)
      * ====================================================================== */
     _initDBus() {
         try {
@@ -568,9 +565,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             );
             this._discoverPlayers();
 
-            // Watchdog leve a cada 2.5s para detectar quando uma música começa a tocar
-            // em outro player (ex: Chrome App vs Electron App) e vincular automaticamente
-            this._pollWatchdogId = Mainloop.timeout_add(2500, () => {
+            this._pollWatchdogId = Mainloop.timeout_add(2000, () => {
                 this._discoverPlayers();
                 return GLib.SOURCE_CONTINUE;
             });
@@ -608,7 +603,6 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     _selectBestPlayer(mprisNames) {
-        // Avalia cada player MPRIS ativo olhando tanto o nome do bus quanto se está Playing
         let bestBus = mprisNames[0];
         let bestScore = -1;
 
@@ -619,8 +613,8 @@ class YTMusicHybridApplet extends Applet.Applet {
 
             if (lower.includes("youtube-music") || lower.includes("ytmusic") || lower.includes("pear")) {
                 score += 100;
-            } else if (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox") || lower.includes("edge")) {
-                score += 75;
+            } else if (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox")) {
+                score += 80;
             }
 
             try {
@@ -634,8 +628,11 @@ class YTMusicHybridApplet extends Applet.Applet {
                     null
                 );
                 const stVar = p.get_cached_property("PlaybackStatus");
-                if (stVar && stVar.deep_unpack() === "Playing") {
-                    score += 120; // Player tocando atualmente ganha máxima prioridade
+                const st = stVar ? stVar.deep_unpack() : "Stopped";
+                if (st === "Playing") {
+                    score += 150;
+                } else if (st === "Paused") {
+                    score += 60;
                 }
             } catch (_) {}
 
@@ -665,11 +662,12 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._propsProxy = null;
 
         if (!busName) {
+            this._playbackStatus = "Stopped";
             this._isPlaying = false;
             this._hasActiveTrack = false;
             this._title = "YouTube Music";
-            this._artist = "Clique no ícone para abrir o YouTube Music";
-            this._album = "Pronto para vincular automaticamente";
+            this._artist = "Clique para abrir o YouTube Music";
+            this._album = "Inicie uma música para ativar o vinil";
             this._durationUs = 0;
             this._positionUs = 0;
             this._refreshAllUI();
@@ -702,8 +700,8 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         const statusVar = this._propsProxy.get_cached_property("PlaybackStatus");
         if (statusVar) {
-            const status = statusVar.deep_unpack();
-            this._isPlaying = (status === "Playing");
+            this._playbackStatus = statusVar.deep_unpack();
+            this._isPlaying = (this._playbackStatus === "Playing");
         }
 
         const volVar = this._propsProxy.get_cached_property("Volume");
@@ -716,6 +714,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             this._positionUs = Number(posVar.deep_unpack());
         }
 
+        let gotTitle = "";
         const metaVar = this._propsProxy.get_cached_property("Metadata");
         if (metaVar) {
             const meta = metaVar.deep_unpack();
@@ -724,19 +723,26 @@ class YTMusicHybridApplet extends Applet.Applet {
                 this._trackId = String(meta["mpris:trackid"].deep_unpack());
             }
             if (meta["xesam:title"]) {
-                this._title = String(meta["xesam:title"].deep_unpack() || "YouTube Music");
+                gotTitle = String(meta["xesam:title"].deep_unpack() || "").trim();
+            }
+            if (gotTitle.length > 0) {
+                this._title = gotTitle;
                 this._hasActiveTrack = true;
             }
             if (meta["xesam:artist"]) {
                 const artists = meta["xesam:artist"].deep_unpack();
-                this._artist = Array.isArray(artists) ? artists.join(", ") : String(artists);
-            } else {
-                this._artist = "YouTube Music";
+                const joined = Array.isArray(artists) ? artists.join(", ") : String(artists);
+                if (joined.trim().length > 0) {
+                    this._artist = joined;
+                }
             }
             if (meta["xesam:album"]) {
-                this._album = String(meta["xesam:album"].deep_unpack() || "YouTube Music");
-            } else {
-                this._album = "YouTube Music Streaming";
+                const alb = String(meta["xesam:album"].deep_unpack() || "").trim();
+                if (alb.length > 0) {
+                    this._album = alb;
+                } else if (this._hasActiveTrack) {
+                    this._album = "YouTube Music";
+                }
             }
             if (meta["mpris:length"]) {
                 this._durationUs = Number(meta["mpris:length"].deep_unpack());
@@ -752,6 +758,13 @@ class YTMusicHybridApplet extends Applet.Applet {
                 this._artUrl = newArtUrl;
                 this._updateCoverArt(newArtUrl);
             }
+        }
+
+        if (this._playbackStatus === "Stopped" && !gotTitle) {
+            this._hasActiveTrack = false;
+            this._title = "YouTube Music";
+            this._artist = "Clique para abrir o YouTube Music";
+            this._album = "Dê Play em uma música para vincular";
         }
 
         this._refreshAllUI();
@@ -868,24 +881,25 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 7. ABRIR E VINCULAR AO APP DO YOUTUBE MUSIC INSTALADO NO LINUX MINT
+     * 7. ABRIR / FOCAR O APP CHROME PWA DO YOUTUBE MUSIC NO LINUX MINT
      * ====================================================================== */
     _raiseOrLaunchYTMusic() {
-        // 1. Se já existir uma janela do YouTube Music aberta no Cinnamon, traz ela para frente!
+        // 1. Verifica todas as janelas abertas no Cinnamon (inclui WM_CLASS crx_cinhimbnkkaeohfgghhklpknlkffjgod)
         try {
-            const tracker = Cinnamon.WindowTracker.get_default();
             const windows = global.get_window_actors();
             for (let i = 0; i < windows.length; i++) {
                 const metaWin = windows[i].get_meta_window();
                 if (!metaWin) continue;
                 const title = (metaWin.get_title() || "").toLowerCase();
                 const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
+                const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
                 if (
                     title.includes("youtube music") ||
+                    wmClass.includes(YTM_CHROME_APP_ID) ||
+                    wmInst.includes(YTM_CHROME_APP_ID) ||
                     wmClass.includes("youtube-music") ||
                     wmClass.includes("ytmusic") ||
-                    wmClass.includes("pear-desktop") ||
-                    wmClass.includes("music.youtube.com")
+                    wmClass.includes("pear-desktop")
                 ) {
                     metaWin.activate(global.get_current_time());
                     this._discoverPlayers();
@@ -894,60 +908,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             }
         } catch (_) {}
 
-        // 2. Se o player ativo suportar MPRIS Raise, aciona também
-        if (this._activeBusName) {
-            try {
-                Gio.DBus.session.call(
-                    this._activeBusName,
-                    MPRIS_PATH,
-                    "org.mpris.MediaPlayer2",
-                    "Raise",
-                    null,
-                    null,
-                    Gio.DBusCallFlags.NONE,
-                    -1,
-                    null,
-                    null
-                );
-            } catch (_) {}
-        }
-
-        // 3. Procura o aplicativo do YouTube Music instalado no Linux Mint (Gio.AppInfo)
-        try {
-            const apps = Gio.AppInfo.get_all();
-            let matchedApp = null;
-
-            for (let i = 0; i < apps.length; i++) {
-                const app = apps[i];
-                const name = (app.get_name() || "").toLowerCase();
-                const disp = (app.get_display_name() || "").toLowerCase();
-                const id = (app.get_id() || "").toLowerCase();
-                const cmd = (app.get_commandline() || "").toLowerCase();
-
-                if (
-                    name.includes("youtube music") ||
-                    disp.includes("youtube music") ||
-                    id.includes("youtube-music") ||
-                    id.includes("ytmusic") ||
-                    id.includes("pear_desktop") ||
-                    cmd.includes("music.youtube.com") ||
-                    cmd.includes("youtube-music")
-                ) {
-                    matchedApp = app;
-                    break;
-                }
-            }
-
-            if (matchedApp) {
-                matchedApp.launch([], null);
-                this._schedulePostLaunchDiscovery();
-                return;
-            }
-        } catch (e) {
-            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
-        }
-
-        // 4. Fallback para comando customizado ou URL padrão
+        // 2. Se houver comando customizado configurado manualmente
         const custom = (this.ytmusicLaunchUrl || "auto").trim();
         if (custom !== "auto" && custom !== "") {
             if (custom.startsWith("http://") || custom.startsWith("https://")) {
@@ -955,15 +916,67 @@ class YTMusicHybridApplet extends Applet.Applet {
             } else {
                 Util.spawnCommandLine(custom);
             }
-        } else {
-            Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
+            this._schedulePostLaunchDiscovery();
+            return;
         }
+
+        // 3. Procura o .desktop do YouTube Music instalado no Mint (priorizando o perfil escolhido)
+        try {
+            const apps = Gio.AppInfo.get_all();
+            const prefProfile = this.chromeProfile || "auto";
+            let candidates = [];
+
+            for (let i = 0; i < apps.length; i++) {
+                const app = apps[i];
+                const name = (app.get_name() || "").toLowerCase();
+                const disp = (app.get_display_name() || "").toLowerCase();
+                const id = (app.get_id() || "").toLowerCase();
+                const cmd = (app.get_commandline() || "");
+
+                if (
+                    name.includes("youtube music") ||
+                    disp.includes("youtube music") ||
+                    id.includes(YTM_CHROME_APP_ID) ||
+                    id.includes("youtube-music") ||
+                    id.includes("ytmusic") ||
+                    cmd.toLowerCase().includes(YTM_CHROME_APP_ID)
+                ) {
+                    let priority = 10;
+                    if (prefProfile !== "auto" && cmd.includes(prefProfile)) {
+                        priority = 100;
+                    } else if (cmd.includes("Profile 3")) {
+                        priority = 50;
+                    } else if (cmd.includes("Default")) {
+                        priority = 45;
+                    }
+                    candidates.push({ app, priority });
+                }
+            }
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.priority - a.priority);
+                candidates[0].app.launch([], null);
+                this._schedulePostLaunchDiscovery();
+                return;
+            }
+        } catch (e) {
+            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
+        }
+
+        // 4. Fallback direto para o Google Chrome PWA do YouTube Music se o binário existir
+        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
+            const prof = (this.chromeProfile && this.chromeProfile !== "auto") ? this.chromeProfile : "Default";
+            Util.spawnCommandLine(`/opt/google/chrome/google-chrome "--profile-directory=${prof}" --app-id=${YTM_CHROME_APP_ID}`);
+            this._schedulePostLaunchDiscovery();
+            return;
+        }
+
+        Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
         this._schedulePostLaunchDiscovery();
     }
 
     _schedulePostLaunchDiscovery() {
-        // Verifica repetidamente nos próximos segundos para vincular assim que o app abrir
-        [800, 1800, 3200, 5000].forEach(delay => {
+        [600, 1500, 2800, 4500].forEach(delay => {
             Mainloop.timeout_add(delay, () => {
                 this._discoverPlayers();
                 return GLib.SOURCE_REMOVE;
@@ -976,8 +989,9 @@ class YTMusicHybridApplet extends Applet.Applet {
      * ====================================================================== */
     _sendMprisCommand(methodName) {
         this._discoverPlayers();
-        if (!this._activeBusName) {
-            // Se o usuário clicou em Play e o app ainda não estava aberto, abre e vincula!
+        // Se nenhum player estiver aberto, ou se o Chrome estiver Stopped (sem aba do YT Music tocando),
+        // abre/foca a janela do YouTube Music imediatamente!
+        if (!this._activeBusName || (this._playbackStatus === "Stopped" && !this._hasActiveTrack)) {
             this._raiseOrLaunchYTMusic();
             return;
         }

@@ -11,12 +11,22 @@
   },
   "collapse-when-idle": {
     "type": "combobox",
-    "default": "when-not-playing",
+    "default": "when-no-track",
     "description": "Minimizar barrinha (mostrar apenas o ícone do YouTube Music)",
     "options": {
-      "Quando não estiver tocando música (Pausado ou Fechado)": "when-not-playing",
-      "Apenas quando o YouTube Music estiver fechado": "when-closed",
+      "Quando não houver música ativa (Minimiza fechado, expande ao tocar/pausar)": "when-no-track",
+      "Sempre que estiver pausado ou fechado (Só mostra botões tocando)": "when-not-playing",
       "Sempre mostrar os botões Voltar / Play / Avançar": "never"
+    }
+  },
+  "chrome-profile": {
+    "type": "combobox",
+    "default": "auto",
+    "description": "Perfil do Chrome PWA do YouTube Music ao clicar no ícone",
+    "options": {
+      "Automático (Detectar perfil ativo ou Default)": "auto",
+      "Perfil Padrão (Default)": "Default",
+      "Perfil 3 (Profile 3)": "Profile 3"
     }
   },
   "player-filter": {
@@ -50,6 +60,6 @@
   "ytmusic-launch-url": {
     "type": "entry",
     "default": "auto",
-    "description": "Comando personalizado (deixe 'auto' para detectar o app YouTube Music instalado no Linux Mint)"
+    "description": "Comando personalizado (deixe 'auto' para abrir o PWA do YouTube Music)"
   }
 }
