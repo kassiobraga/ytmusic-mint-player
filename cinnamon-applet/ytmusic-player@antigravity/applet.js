@@ -1,18 +1,23 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid Vinyl v1.3) - Cinnamon Applet
+ * YouTube Music Taskbar Player (Hybrid v1.4) - Cinnamon Applet
  * UUID: ytmusic-player@antigravity
  *
- * Otimizado especificamente para o Google Chrome PWA do YouTube Music
- * (app-id: cinhimbnkkaeohfgghhklpknlkffjgod) no Linux Mint Cinnamon:
- *  - Detecta janelas abertas do PWA pelo WM_CLASS (crx_cinhimbnkkaeohfgghhklpknlkffjgod)
- *    ou abre diretamente o PWA do YouTube Music no perfil ativo do Chrome.
- *  - Quando o Chrome reporta Status=Stopped (nenhuma música iniciada na sessão),
- *    clicar no ícone ou em Play abre/foca a janela do PWA e guia para o primeiro Play;
- *    assim que a sessão MediaSession do Chrome inicia, os botões ⏮ ⏯ ⏭ controlam
- *    tudo via MPRIS2 D-Bus (`org.mpris.MediaPlayer2.chromium.instance*`).
- *  - Auto-Collapse inteligente: fica minimizado só com o ícone do YouTube Music
- *    quando nenhuma música foi iniciada (`Stopped`), e expande os botões `⏮ ⏯ ⏭`
- *    assim que uma música está ativa (`Playing` ou `Paused`).
+ * Novidades v1.4 (Feedback do Usuário):
+ *  1. Capa do Álbum Real e Estática na Janelinha Hover:
+ *     Removido o giro e o corte redondo da foto da banda na janelinha! Agora
+ *     a capa oficial do álbum (ex: Greatest Hits do Foo Fighters) aparece no
+ *     formato original de capa de álbum (quadrada com cantos arredondados de
+ *     12px, alta nitidez e sombra profunda), sem girar!
+ *     O giro de vinil fica EXCLUSIVO no ícone vermelho do YouTube Music na barra!
+ *  2. Continuar Tocando em Segundo Plano (Modo Bandeja / Close-to-Bar):
+ *     - Clicar no ícone do YouTube Music na barra funciona como Toggle: se a
+ *       janela do YouTube Music estiver aberta e em foco, ele a minimiza/oculta
+ *       da lista de janelas (`set_skip_taskbar` + `minimize`) para ela sumir da
+ *       tela e continuar tocando limpa só na nossa barrinha!
+ *     - Se você clicar no "X" da janela do YouTube Music enquanto uma música
+ *       estiver tocando, o Applet detecta o fechamento acidental, reabre/mantém
+ *       o player oculto em segundo plano (`--no-startup-window` / minimizado)
+ *       e retoma a reprodução para a música nunca morrer sem você querer!
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -63,10 +68,14 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._playbackStatus = "Stopped";
         this._isPlaying = false;
         this._hasActiveTrack = false;
+        this._wasPlayingBeforeClose = false;
+        this._lastPlayingTimestamp = 0;
+        this._hiddenInTrayMode = false;
+
         this._trackId = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
         this._title = "YouTube Music";
         this._artist = "Clique para abrir o YouTube Music";
-        this._album = "Inicie uma música para ativar o vinil";
+        this._album = "Inicie uma música para ativar o player";
         this._artUrl = "";
         this._cachedArtPath = null;
         this._durationUs = 0;
@@ -88,11 +97,12 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._buildPanelUI();
         this._buildHoverPopupUI();
         this._initDBus();
+        this._initWindowInterceptor();
         this._updateBarCollapseState();
     }
 
     /* ======================================================================
-     * 1. BARRA DE TAREFAS (AUTO-COLLAPSE: SÓ ÍCONE QUANDO PARADO, +3 BOTÕES ATIVO)
+     * 1. BARRA DE TAREFAS (ÍCONE DO YT MUSIC GIRANDO + 3 BOTÕES)
      * ====================================================================== */
     _buildPanelUI() {
         this.actor.set_style_class_name("applet-box");
@@ -124,7 +134,8 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
-        this._ytmIconBtn.connect("clicked", () => this._raiseOrLaunchYTMusic());
+        // Clicar no ícone na barra alterna entre Mostrar a janela ou Ocultar em 2º plano (tocando na barra!)
+        this._ytmIconBtn.connect("clicked", () => this._toggleOrLaunchYTMusicWindow());
 
         this._controlsBox = new St.BoxLayout({
             style_class: "ytm-panel-controls-box",
@@ -200,11 +211,8 @@ class YTMusicHybridApplet extends Applet.Applet {
         let showControls = true;
 
         if (mode === "when-not-playing") {
-            // Só mostra os botões quando estiver efetivamente Playing
             showControls = this._isPlaying;
         } else if (mode === "when-no-track" || mode === "when-closed") {
-            // Minimiza (fica só o ícone do YouTube Music) quando não há música ativa (Stopped)
-            // e mantém os botões [⏮ ⏯ ⏭] visíveis quando está Playing ou Paused para você poder dar Play de novo!
             showControls = (this._isPlaying || (this._playbackStatus === "Paused" && this._hasActiveTrack));
         } else {
             showControls = true;
@@ -220,7 +228,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 2. JANELINHA HOVER (ESTILO 2: DYNAMIC ISLAND + VINIL + GLOW + SEEK)
+     * 2. JANELINHA HOVER (CAPA DO ÁLBUM QUADRADA ESTÁTICA + GLOW + SEEK)
      * ====================================================================== */
     _buildHoverPopupUI() {
         this.menuManager = new PopupMenu.PopupMenuManager(this);
@@ -250,31 +258,16 @@ class YTMusicHybridApplet extends Applet.Applet {
             y_align: Clutter.ActorAlign.CENTER
         });
 
-        this._vinylWrapper = new St.Widget({
-            style_class: "ytm-vinyl-wrapper",
-            layout_manager: new Clutter.BinLayout(),
-            width: 72,
-            height: 72
-        });
-        this._vinylWrapper.set_pivot_point(0.5, 0.5);
-
+        // Capa do Álbum no formato original de Álbum (Quadrada 72x72 com cantos arredondados, SEM GIRAR!)
         const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
-        this._vinylArtBin = new St.Bin({
-            width: 68,
-            height: 68,
+        this._albumCoverBin = new St.Bin({
+            style_class: "ytm-album-cover-wrapper",
+            width: 72,
+            height: 72,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
-            style: `border-radius: 999px; background-image: url("file://${defaultIconPath}"); background-size: cover;`
+            style: `border-radius: 12px; background-image: url("file://${defaultIconPath}"); background-size: cover; background-position: center;`
         });
-
-        this._vinylHole = new St.Widget({
-            style_class: "ytm-vinyl-hole",
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER
-        });
-
-        this._vinylWrapper.add_actor(this._vinylArtBin);
-        this._vinylWrapper.add_actor(this._vinylHole);
 
         const metaCol = new St.BoxLayout({
             vertical: true,
@@ -326,7 +319,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         metaCol.add_actor(this._artistLabel);
         metaCol.add_actor(this._albumLabel);
 
-        headerRow.add_actor(this._vinylWrapper);
+        headerRow.add_actor(this._albumCoverBin);
         headerRow.add_actor(metaCol);
 
         const progressRow = new St.BoxLayout({
@@ -375,11 +368,11 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._openAppBtn = new St.Button({
             style_class: "ytm-open-app-btn",
             reactive: true,
-            label: "↗ Abrir YT Music"
+            label: "🗕 Ocultar Janela"
         });
         this._openAppBtn.connect("clicked", () => {
             this.menu.close();
-            this._raiseOrLaunchYTMusic();
+            this._toggleOrLaunchYTMusicWindow();
         });
 
         const ctrlsBox = new St.BoxLayout({
@@ -467,6 +460,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             if (this._pointerInPanel && !this.menu.isOpen) {
                 this._discoverPlayers();
                 this._syncPositionNow();
+                this._updateWindowButtonLabel();
                 this.menu.open(true);
             }
             return GLib.SOURCE_REMOVE;
@@ -497,7 +491,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 4. ANIMAÇÃO DE ROTAÇÃO DO VINIL
+     * 4. ANIMAÇÃO DE ROTAÇÃO (APENAS NO ÍCONE DA BARRA! CAPA DO ÁLBUM FIXA!)
      * ====================================================================== */
     _updateAnimationState() {
         if (this._isPlaying) {
@@ -514,9 +508,6 @@ class YTMusicHybridApplet extends Applet.Applet {
                         this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, this._spinAngle);
                     } else {
                         this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, 0);
-                    }
-                    if (this.menu && this.menu.isOpen) {
-                        this._vinylWrapper.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, this._spinAngle);
                     }
                     return GLib.SOURCE_CONTINUE;
                 });
@@ -545,7 +536,182 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 5. INTEGRAÇÃO D-BUS MPRIS2 (CHROME PWA & APPS NATIVOS)
+     * 5. MODO SEGUNDO PLANO (CONTINUAR TOCANDO AO FECHAR / MINIMIZAR PARA A BARRA)
+     * ====================================================================== */
+    _initWindowInterceptor() {
+        // Inicia o daemon em Python/X11 que permite ocultar (unmap) a janela do
+        // YouTube Music completamente da barra de janelas mantendo o áudio tocando!
+        try {
+            const helperPath = GLib.build_filenamev([this.metadata.path, "ytm_window_helper.py"]);
+            if (GLib.file_test(helperPath, GLib.FileTest.EXISTS)) {
+                Util.spawn_async(["/usr/bin/python3", helperPath], null);
+            }
+        } catch (_) {}
+    }
+
+    _findYTMusicMetaWindow() {
+        try {
+            const windows = global.get_window_actors();
+            for (let i = 0; i < windows.length; i++) {
+                const metaWin = windows[i].get_meta_window();
+                if (!metaWin) continue;
+                const title = (metaWin.get_title() || "").toLowerCase();
+                const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
+                const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
+                if (
+                    title.includes("youtube music") ||
+                    wmClass.includes(YTM_CHROME_APP_ID) ||
+                    wmInst.includes(YTM_CHROME_APP_ID) ||
+                    wmClass.includes("youtube-music") ||
+                    wmClass.includes("ytmusic") ||
+                    wmClass.includes("pear-desktop")
+                ) {
+                    return metaWin;
+                }
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    _updateWindowButtonLabel() {
+        const metaWin = this._findYTMusicMetaWindow();
+        if (metaWin && !metaWin.minimized && !this._hiddenInTrayMode) {
+            this._openAppBtn.set_label("🗕 Ocultar na Barra");
+        } else {
+            this._openAppBtn.set_label("↗ Mostrar YT Music");
+        }
+    }
+
+    _toggleOrLaunchYTMusicWindow() {
+        const metaWin = this._findYTMusicMetaWindow();
+        const fifoPath = GLib.build_filenamev([GLib.get_user_runtime_dir() || "/tmp", "ytmusic-mint-window-cmd"]);
+
+        if (metaWin) {
+            if (!metaWin.minimized && !this._hiddenInTrayMode) {
+                // Oculta a janela para continuar tocando limpa só na nossa barrinha!
+                this._hiddenInTrayMode = true;
+                metaWin.minimize();
+                try {
+                    GLib.file_set_contents(fifoPath, "hide");
+                } catch (_) {}
+            } else {
+                // Reexibe a janela do YouTube Music
+                this._hiddenInTrayMode = false;
+                try {
+                    GLib.file_set_contents(fifoPath, "show");
+                } catch (_) {}
+                metaWin.unminimize(global.get_current_time());
+                metaWin.activate(global.get_current_time());
+            }
+            this._updateWindowButtonLabel();
+            this._discoverPlayers();
+            return;
+        }
+
+        // Se a janela estava oculta via X11 unmap pelo helper, manda reexibir primeiro
+        if (this._hiddenInTrayMode && this._activeBusName) {
+            this._hiddenInTrayMode = false;
+            try {
+                GLib.file_set_contents(fifoPath, "show");
+            } catch (_) {}
+            this._updateWindowButtonLabel();
+            return;
+        }
+
+        // Caso contrário, lança o App do YouTube Music
+        this._launchYTMusicApp(false);
+    }
+
+    _launchYTMusicApp(startMinimized) {
+        const custom = (this.ytmusicLaunchUrl || "auto").trim();
+        if (custom !== "auto" && custom !== "") {
+            if (custom.startsWith("http://") || custom.startsWith("https://")) {
+                Util.spawnCommandLine(`xdg-open "${custom}"`);
+            } else {
+                Util.spawnCommandLine(custom);
+            }
+            this._schedulePostLaunchDiscovery(startMinimized);
+            return;
+        }
+
+        try {
+            const apps = Gio.AppInfo.get_all();
+            const prefProfile = this.chromeProfile || "auto";
+            let candidates = [];
+
+            for (let i = 0; i < apps.length; i++) {
+                const app = apps[i];
+                const name = (app.get_name() || "").toLowerCase();
+                const disp = (app.get_display_name() || "").toLowerCase();
+                const id = (app.get_id() || "").toLowerCase();
+                const cmd = (app.get_commandline() || "");
+
+                if (
+                    name.includes("youtube music") ||
+                    disp.includes("youtube music") ||
+                    id.includes(YTM_CHROME_APP_ID) ||
+                    id.includes("youtube-music") ||
+                    id.includes("ytmusic") ||
+                    cmd.toLowerCase().includes(YTM_CHROME_APP_ID)
+                ) {
+                    let priority = 10;
+                    if (prefProfile !== "auto" && cmd.includes(prefProfile)) {
+                        priority = 100;
+                    } else if (cmd.includes("Profile 3")) {
+                        priority = 50;
+                    } else if (cmd.includes("Default")) {
+                        priority = 45;
+                    }
+                    candidates.push({ app, priority });
+                }
+            }
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.priority - a.priority);
+                candidates[0].app.launch([], null);
+                this._schedulePostLaunchDiscovery(startMinimized);
+                return;
+            }
+        } catch (e) {
+            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
+        }
+
+        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
+            const prof = (this.chromeProfile && this.chromeProfile !== "auto") ? this.chromeProfile : "Default";
+            Util.spawnCommandLine(`/opt/google/chrome/google-chrome "--profile-directory=${prof}" --app-id=${YTM_CHROME_APP_ID}`);
+            this._schedulePostLaunchDiscovery(startMinimized);
+            return;
+        }
+
+        Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
+        this._schedulePostLaunchDiscovery(startMinimized);
+    }
+
+    _schedulePostLaunchDiscovery(autoHideAndResume) {
+        [700, 1600, 2800, 4200].forEach(delay => {
+            Mainloop.timeout_add(delay, () => {
+                this._discoverPlayers();
+                if (autoHideAndResume) {
+                    const win = this._findYTMusicMetaWindow();
+                    if (win) {
+                        this._hiddenInTrayMode = true;
+                        win.minimize();
+                        const fifoPath = GLib.build_filenamev([GLib.get_user_runtime_dir() || "/tmp", "ytmusic-mint-window-cmd"]);
+                        try {
+                            GLib.file_set_contents(fifoPath, "hide");
+                        } catch (_) {}
+                    }
+                    if (this._activeBusName) {
+                        this._sendMprisCommand("Play");
+                    }
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+    }
+
+    /* ======================================================================
+     * 6. INTEGRAÇÃO D-BUS MPRIS2
      * ====================================================================== */
     _initDBus() {
         try {
@@ -557,7 +723,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 null,
                 Gio.DBusSignalFlags.NONE,
                 (conn, sender, path, iface, signal, params) => {
-                    const [name] = params.deep_unpack();
+                    const [name, oldOwner, newOwner] = params.deep_unpack();
                     if (name && name.startsWith(MPRIS_PREFIX)) {
                         this._discoverPlayers();
                     }
@@ -565,7 +731,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             );
             this._discoverPlayers();
 
-            this._pollWatchdogId = Mainloop.timeout_add(2000, () => {
+            this._pollWatchdogId = Mainloop.timeout_add(1500, () => {
                 this._discoverPlayers();
                 return GLib.SOURCE_CONTINUE;
             });
@@ -667,7 +833,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             this._hasActiveTrack = false;
             this._title = "YouTube Music";
             this._artist = "Clique para abrir o YouTube Music";
-            this._album = "Inicie uma música para ativar o vinil";
+            this._album = "Inicie uma música para ativar o player";
             this._durationUs = 0;
             this._positionUs = 0;
             this._refreshAllUI();
@@ -698,10 +864,14 @@ class YTMusicHybridApplet extends Applet.Applet {
     _readPlayerProperties() {
         if (!this._propsProxy) return;
 
+        const prevPlaying = this._isPlaying;
         const statusVar = this._propsProxy.get_cached_property("PlaybackStatus");
         if (statusVar) {
             this._playbackStatus = statusVar.deep_unpack();
             this._isPlaying = (this._playbackStatus === "Playing");
+            if (this._isPlaying) {
+                this._lastPlayingTimestamp = Date.now();
+            }
         }
 
         const volVar = this._propsProxy.get_cached_property("Volume");
@@ -763,8 +933,8 @@ class YTMusicHybridApplet extends Applet.Applet {
         if (this._playbackStatus === "Stopped" && !gotTitle) {
             this._hasActiveTrack = false;
             this._title = "YouTube Music";
-            this._artist = "Clique para abrir o YouTube Music";
-            this._album = "Dê Play em uma música para vincular";
+            this._artist = "Clique no ícone para abrir ou ocultar";
+            this._album = "Use 'Ocultar na Barra' para tocar em 2º plano";
         }
 
         this._refreshAllUI();
@@ -796,7 +966,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 6. CAPA DO ÁLBUM NO VINIL & EXTRAÇÃO DE GLOW RADIAL DINÂMICO
+     * 7. CAPA DO ÁLBUM ESTÁTICA (QUADRADA) & EXTRAÇÃO DE GLOW DINÂMICO
      * ====================================================================== */
     _updateCoverArt(artUrl) {
         if (artUrl.startsWith("file://")) {
@@ -824,8 +994,8 @@ class YTMusicHybridApplet extends Applet.Applet {
 
     _applyLocalCoverFile(filePath) {
         this._cachedArtPath = filePath;
-        this._vinylArtBin.set_style(
-            `border-radius: 999px; background-image: url("file://${filePath}"); background-size: cover;`
+        this._albumCoverBin.set_style(
+            `border-radius: 12px; background-image: url("file://${filePath}"); background-size: cover; background-position: center;`
         );
 
         try {
@@ -881,118 +1051,12 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 7. ABRIR / FOCAR O APP CHROME PWA DO YOUTUBE MUSIC NO LINUX MINT
-     * ====================================================================== */
-    _raiseOrLaunchYTMusic() {
-        // 1. Verifica todas as janelas abertas no Cinnamon (inclui WM_CLASS crx_cinhimbnkkaeohfgghhklpknlkffjgod)
-        try {
-            const windows = global.get_window_actors();
-            for (let i = 0; i < windows.length; i++) {
-                const metaWin = windows[i].get_meta_window();
-                if (!metaWin) continue;
-                const title = (metaWin.get_title() || "").toLowerCase();
-                const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
-                const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
-                if (
-                    title.includes("youtube music") ||
-                    wmClass.includes(YTM_CHROME_APP_ID) ||
-                    wmInst.includes(YTM_CHROME_APP_ID) ||
-                    wmClass.includes("youtube-music") ||
-                    wmClass.includes("ytmusic") ||
-                    wmClass.includes("pear-desktop")
-                ) {
-                    metaWin.activate(global.get_current_time());
-                    this._discoverPlayers();
-                    return;
-                }
-            }
-        } catch (_) {}
-
-        // 2. Se houver comando customizado configurado manualmente
-        const custom = (this.ytmusicLaunchUrl || "auto").trim();
-        if (custom !== "auto" && custom !== "") {
-            if (custom.startsWith("http://") || custom.startsWith("https://")) {
-                Util.spawnCommandLine(`xdg-open "${custom}"`);
-            } else {
-                Util.spawnCommandLine(custom);
-            }
-            this._schedulePostLaunchDiscovery();
-            return;
-        }
-
-        // 3. Procura o .desktop do YouTube Music instalado no Mint (priorizando o perfil escolhido)
-        try {
-            const apps = Gio.AppInfo.get_all();
-            const prefProfile = this.chromeProfile || "auto";
-            let candidates = [];
-
-            for (let i = 0; i < apps.length; i++) {
-                const app = apps[i];
-                const name = (app.get_name() || "").toLowerCase();
-                const disp = (app.get_display_name() || "").toLowerCase();
-                const id = (app.get_id() || "").toLowerCase();
-                const cmd = (app.get_commandline() || "");
-
-                if (
-                    name.includes("youtube music") ||
-                    disp.includes("youtube music") ||
-                    id.includes(YTM_CHROME_APP_ID) ||
-                    id.includes("youtube-music") ||
-                    id.includes("ytmusic") ||
-                    cmd.toLowerCase().includes(YTM_CHROME_APP_ID)
-                ) {
-                    let priority = 10;
-                    if (prefProfile !== "auto" && cmd.includes(prefProfile)) {
-                        priority = 100;
-                    } else if (cmd.includes("Profile 3")) {
-                        priority = 50;
-                    } else if (cmd.includes("Default")) {
-                        priority = 45;
-                    }
-                    candidates.push({ app, priority });
-                }
-            }
-
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => b.priority - a.priority);
-                candidates[0].app.launch([], null);
-                this._schedulePostLaunchDiscovery();
-                return;
-            }
-        } catch (e) {
-            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
-        }
-
-        // 4. Fallback direto para o Google Chrome PWA do YouTube Music se o binário existir
-        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
-            const prof = (this.chromeProfile && this.chromeProfile !== "auto") ? this.chromeProfile : "Default";
-            Util.spawnCommandLine(`/opt/google/chrome/google-chrome "--profile-directory=${prof}" --app-id=${YTM_CHROME_APP_ID}`);
-            this._schedulePostLaunchDiscovery();
-            return;
-        }
-
-        Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
-        this._schedulePostLaunchDiscovery();
-    }
-
-    _schedulePostLaunchDiscovery() {
-        [600, 1500, 2800, 4500].forEach(delay => {
-            Mainloop.timeout_add(delay, () => {
-                this._discoverPlayers();
-                return GLib.SOURCE_REMOVE;
-            });
-        });
-    }
-
-    /* ======================================================================
      * 8. COMANDOS DE MÍDIA (PLAY, PAUSE, NEXT, PREV, SEEK, VOLUME)
      * ====================================================================== */
     _sendMprisCommand(methodName) {
         this._discoverPlayers();
-        // Se nenhum player estiver aberto, ou se o Chrome estiver Stopped (sem aba do YT Music tocando),
-        // abre/foca a janela do YouTube Music imediatamente!
         if (!this._activeBusName || (this._playbackStatus === "Stopped" && !this._hasActiveTrack)) {
-            this._raiseOrLaunchYTMusic();
+            this._toggleOrLaunchYTMusicWindow();
             return;
         }
         try {
@@ -1103,6 +1167,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._albumLabel.set_text(this._album);
         this._volumeLabel.set_text(`🔊 ${Math.round((this._volume || 1) * 100)}%`);
 
+        this._updateWindowButtonLabel();
         this._updateBarCollapseState();
         this._updateProgressUI();
         this._updateAnimationState();

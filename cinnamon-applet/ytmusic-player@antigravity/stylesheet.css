@@ -1,5 +1,5 @@
 /* ==========================================================================
-   YouTube Music Taskbar Player (Hybrid Vinyl v1.2) - Cinnamon St Stylesheet
+   YouTube Music Taskbar Player (Hybrid v1.4) - Cinnamon St Stylesheet
    ========================================================================== */
 
 /* --- BARRA DE TAREFAS (ESTILO 1 LIMPO + AUTO-COLLAPSE QUANDO PARADO) --- */
@@ -76,9 +76,9 @@
     box-shadow: 0 2px 10px rgba(244, 63, 94, 0.65);
 }
 
-/* --- JANELINHA HOVER (ESTILO 2 DYNAMIC ISLAND + VINIL GIRANDO) --- */
+/* --- JANELINHA HOVER (ESTILO 2 DYNAMIC ISLAND + CAPA DO ÁLBUM QUADRADA ESTÁTICA) --- */
 .ytm-popup-card {
-    width: 344px;
+    width: 348px;
     background-gradient-direction: vertical;
     background-gradient-start: rgba(16, 16, 21, 0.97);
     background-gradient-end: rgba(10, 10, 14, 0.99);
@@ -92,21 +92,14 @@
     spacing: 14px;
 }
 
-.ytm-vinyl-wrapper {
+/* Capa do Álbum Quadrada com Bordas Arredondadas (Sem girar!) */
+.ytm-album-cover-wrapper {
     width: 72px;
     height: 72px;
-    border-radius: 999px;
-    border: 2px solid rgba(255, 255, 255, 0.28);
+    border-radius: 12px;
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
     background-color: #18181b;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
-}
-
-.ytm-vinyl-hole {
-    width: 14px;
-    height: 14px;
-    border-radius: 999px;
-    background-color: #09090b;
-    border: 1.5px solid rgba(255, 255, 255, 0.42);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.65);
 }
 
 .ytm-badge-pill {
