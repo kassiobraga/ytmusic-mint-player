@@ -1,8 +1,8 @@
 /* ==========================================================================
-   YouTube Music Taskbar Player (Hybrid Vinyl) - Cinnamon St Stylesheet
+   YouTube Music Taskbar Player (Hybrid Vinyl v1.2) - Cinnamon St Stylesheet
    ========================================================================== */
 
-/* --- BARRA DE TAREFAS (ESTILO 1 LIMPO: ÍCONE YT MUSIC + 3 BOTÕES) --- */
+/* --- BARRA DE TAREFAS (ESTILO 1 LIMPO + AUTO-COLLAPSE QUANDO PARADO) --- */
 .ytm-panel-container {
     background-color: rgba(28, 28, 33, 0.92);
     border: 1px solid rgba(255, 255, 255, 0.11);
@@ -10,13 +10,24 @@
     padding: 2px 7px;
     margin: 3px 4px;
     spacing: 5px;
-    transition-duration: 180ms;
+    transition-duration: 200ms;
 }
 
-.ytm-panel-container:hover {
+.ytm-panel-container-compact {
+    background-color: rgba(28, 28, 33, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 999px;
+    padding: 2px 4px;
+    margin: 3px 4px;
+    spacing: 0px;
+    transition-duration: 200ms;
+}
+
+.ytm-panel-container:hover,
+.ytm-panel-container-compact:hover {
     background-color: rgba(38, 38, 46, 0.98);
-    border-color: rgba(244, 63, 94, 0.55);
-    box-shadow: 0 0 10px rgba(225, 29, 72, 0.25);
+    border-color: rgba(244, 63, 94, 0.65);
+    box-shadow: 0 0 10px rgba(225, 29, 72, 0.30);
 }
 
 .ytm-panel-icon-btn {
@@ -26,6 +37,10 @@
 
 .ytm-panel-icon-pulse {
     box-shadow: 0 0 8px rgba(255, 0, 51, 0.65);
+}
+
+.ytm-panel-controls-box {
+    spacing: 4px;
 }
 
 .ytm-panel-divider {

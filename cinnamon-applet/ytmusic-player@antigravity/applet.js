@@ -1,13 +1,18 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid Vinyl) - Cinnamon Applet
+ * YouTube Music Taskbar Player (Hybrid Vinyl v1.2) - Cinnamon Applet
  * UUID: ytmusic-player@antigravity
  *
- * Design Híbrido:
- *  - Barra de Tarefas (Esquerda): Estilo 1 Limpo (Apenas ícone oficial do
- *    YouTube Music girando suavemente como vinil + Voltar, Play/Pause, Avançar).
- *  - Janelinha Hover (PopupMenu): Estilo 2 Dynamic Island (Capa do álbum em
- *    formato de disco de vinil girando, glow radial dinâmico, título da música,
- *    cantor/álbum, barra de progresso clicável e controles completos).
+ * Novidades v1.2:
+ *  1. Auto-Collapse Inteligente: Quando não estiver tocando música (ou quando
+ *     o player estiver fechado), a barrinha minimiza automaticamente deixando
+ *     APENAS o ícone oficial do YouTube Music visível na barra. Assim que
+ *     começa a tocar, os botões ⏮ ⏯ ⏭ aparecem suavemente!
+ *  2. Auto-Discovery do App YouTube Music instalado no Linux Mint:
+ *     Vasculha Gio.AppInfo.get_all() procurando o app do YouTube Music
+ *     (WebApp do Mint, Pear Desktop, th-ch, Flatpak, Chrome App) e abre/foca
+ *     a janela dele ao clicar no ícone do YouTube Music, vinculando-se
+ *     automaticamente via MPRIS2 D-Bus assim que ele iniciar.
+ *  3. Compatibilidade Total com Linux Mint (Cinnamon 5.x e 6.x).
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -19,61 +24,13 @@ const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Clutter = imports.gi.Clutter;
 const GdkPixbuf = imports.gi.GdkPixbuf;
-const Cogl = imports.gi.Cogl;
+const Cinnamon = imports.gi.Cinnamon;
 const Util = imports.misc.util;
 
 const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
 const DBUS_NAME = "org.freedesktop.DBus";
 const DBUS_PATH = "/org/freedesktop/DBus";
-
-const DBusIfaceXml = `
-<node>
-  <interface name="org.freedesktop.DBus">
-    <method name="ListNames">
-      <arg type="as" direction="out" name="names"/>
-    </method>
-    <signal name="NameOwnerChanged">
-      <arg type="s" name="name"/>
-      <arg type="s" name="old_owner"/>
-      <arg type="s" name="new_owner"/>
-    </signal>
-  </interface>
-</node>`;
-
-const MprisPlayerIfaceXml = `
-<node>
-  <interface name="org.mpris.MediaPlayer2">
-    <method name="Raise"/>
-    <property name="Identity" type="s" access="read"/>
-  </interface>
-  <interface name="org.mpris.MediaPlayer2.Player">
-    <method name="Next"/>
-    <method name="Previous"/>
-    <method name="Pause"/>
-    <method name="PlayPause"/>
-    <method name="Stop"/>
-    <method name="Play"/>
-    <method name="Seek">
-      <arg type="x" direction="in" name="Offset"/>
-    </method>
-    <method name="SetPosition">
-      <arg type="o" direction="in" name="TrackId"/>
-      <arg type="x" direction="in" name="Position"/>
-    </method>
-    <property name="PlaybackStatus" type="s" access="read"/>
-    <property name="Metadata" type="a{sv}" access="read"/>
-    <property name="Volume" type="d" access="readwrite"/>
-    <property name="Position" type="x" access="read"/>
-    <property name="CanGoNext" type="b" access="read"/>
-    <property name="CanGoPrevious" type="b" access="read"/>
-    <property name="CanPlay" type="b" access="read"/>
-    <property name="CanPause" type="b" access="read"/>
-    <property name="CanSeek" type="b" access="read"/>
-  </interface>
-</node>`;
-
-const DBusProxy = Gio.DBusProxy.makeProxyWrapper(DBusIfaceXml);
 
 class YTMusicHybridApplet extends Applet.Applet {
     constructor(metadata, orientation, panelHeight, instanceId) {
@@ -89,6 +46,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         // Settings
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instanceId);
         this.settings.bind("icon-animation", "iconAnimation", () => this._updateAnimationState());
+        this.settings.bind("collapse-when-idle", "collapseWhenIdle", () => this._updateBarCollapseState());
         this.settings.bind("player-filter", "playerFilter", () => this._discoverPlayers());
         this.settings.bind("hover-delay-ms", "hoverDelayMs");
         this.settings.bind("hover-close-grace-ms", "hoverCloseGraceMs");
@@ -96,26 +54,26 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         // Runtime State
         this._activeBusName = null;
-        this._playerProxy = null;
         this._propsProxy = null;
         this._propsSignalId = 0;
+        this._dbusSignalId = 0;
 
         this._isPlaying = false;
+        this._hasActiveTrack = false;
         this._trackId = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
         this._title = "YouTube Music";
-        this._artist = "Pronto para tocar";
-        this._album = "Passe o mouse ou dê Play";
+        this._artist = "Clique no ícone para abrir o YouTube Music";
+        this._album = "Pronto para vincular automaticamente";
         this._artUrl = "";
         this._cachedArtPath = null;
         this._durationUs = 0;
         this._positionUs = 0;
         this._volume = 1.0;
-        this._accentHex = "#e11d48";
-        this._accentRgba = "rgba(225, 29, 72, 0.25)";
 
         this._spinAngle = 0;
         this._spinTimerId = 0;
         this._posTimerId = 0;
+        this._pollWatchdogId = 0;
         this._hoverOpenTimerId = 0;
         this._hoverCloseTimerId = 0;
         this._pointerInPanel = false;
@@ -127,10 +85,11 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._buildPanelUI();
         this._buildHoverPopupUI();
         this._initDBus();
+        this._updateBarCollapseState();
     }
 
     /* ======================================================================
-     * 1. BARRA DE TAREFAS (ESTILO 1 LIMPO: ÍCONE YT MUSIC GIRANDO + 3 BOTÕES)
+     * 1. BARRA DE TAREFAS (AUTO-COLLAPSE: SÓ ÍCONE QUANDO PARADO, +3 BOTÕES TOCANDO)
      * ====================================================================== */
     _buildPanelUI() {
         this.actor.set_style_class_name("applet-box");
@@ -138,7 +97,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this.actor.track_hover = true;
 
         this._panelCard = new St.BoxLayout({
-            style_class: "ytm-panel-container",
+            style_class: "ytm-panel-container-compact",
             reactive: true,
             track_hover: true,
             vertical: false,
@@ -163,15 +122,21 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
+        // Clicar no ícone do YouTube Music abre/foca o app instalado e já vincula!
         this._ytmIconBtn.connect("clicked", () => this._raiseOrLaunchYTMusic());
 
-        // Divisor sutil
+        // Container retrátil dos controles (Divisor + Voltar + Play/Pause + Avançar)
+        this._controlsBox = new St.BoxLayout({
+            style_class: "ytm-panel-controls-box",
+            vertical: false,
+            y_align: Clutter.ActorAlign.CENTER
+        });
+
         this._divider = new St.Widget({
             style_class: "ytm-panel-divider",
             y_align: Clutter.ActorAlign.CENTER
         });
 
-        // Botão Voltar (⏮)
         this._panelPrevBtn = new St.Button({
             style_class: "ytm-panel-btn",
             reactive: true,
@@ -183,7 +148,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._panelPrevBtn.connect("clicked", () => this._sendMprisCommand("Previous"));
 
-        // Botão Play / Pause (⏯)
         this._panelPlayIcon = new St.Icon({
             icon_name: "media-playback-start-symbolic",
             icon_size: 13,
@@ -196,7 +160,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._panelPlayBtn.connect("clicked", () => this._sendMprisCommand("PlayPause"));
 
-        // Botão Avançar (⏭)
         this._panelNextBtn = new St.Button({
             style_class: "ytm-panel-btn",
             reactive: true,
@@ -208,13 +171,15 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._panelNextBtn.connect("clicked", () => this._sendMprisCommand("Next"));
 
-        this._panelCard.add_child(this._ytmIconBtn);
-        this._panelCard.add_child(this._divider);
-        this._panelCard.add_child(this._panelPrevBtn);
-        this._panelCard.add_child(this._panelPlayBtn);
-        this._panelCard.add_child(this._panelNextBtn);
+        this._controlsBox.add_actor(this._divider);
+        this._controlsBox.add_actor(this._panelPrevBtn);
+        this._controlsBox.add_actor(this._panelPlayBtn);
+        this._controlsBox.add_actor(this._panelNextBtn);
 
-        this.actor.add_child(this._panelCard);
+        this._panelCard.add_actor(this._ytmIconBtn);
+        this._panelCard.add_actor(this._controlsBox);
+
+        this.actor.add_actor(this._panelCard);
 
         // Eventos de Hover na Barra e Scroll de Volume
         this.actor.connect("enter-event", () => {
@@ -231,6 +196,29 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
     }
 
+    _updateBarCollapseState() {
+        const mode = this.collapseWhenIdle || "when-not-playing";
+        let showControls = true;
+
+        if (mode === "when-not-playing") {
+            // Mostra os botões quando estiver tocando música!
+            // Quando não estiver tocando nada, minimiza deixando só o ícone do YouTube Music
+            showControls = this._isPlaying;
+        } else if (mode === "when-closed") {
+            showControls = (this._activeBusName !== null);
+        } else {
+            showControls = true;
+        }
+
+        if (showControls) {
+            this._controlsBox.show();
+            this._panelCard.set_style_class_name("ytm-panel-container");
+        } else {
+            this._controlsBox.hide();
+            this._panelCard.set_style_class_name("ytm-panel-container-compact");
+        }
+    }
+
     /* ======================================================================
      * 2. JANELINHA HOVER (ESTILO 2: DYNAMIC ISLAND + VINIL + GLOW + SEEK)
      * ====================================================================== */
@@ -239,7 +227,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         this.menu = new Applet.AppletPopupMenu(this, this.orientation);
         this.menuManager.addMenu(this.menu);
 
-        // Rastrear mouse dentro da janelinha para mantê-la aberta durante o hover
         this.menu.actor.reactive = true;
         this.menu.actor.track_hover = true;
         this.menu.actor.connect("enter-event", () => {
@@ -264,7 +251,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             y_align: Clutter.ActorAlign.CENTER
         });
 
-        // Container do Disco de Vinil (72x72 circular)
         this._vinylWrapper = new St.Widget({
             style_class: "ytm-vinyl-wrapper",
             layout_manager: new Clutter.BinLayout(),
@@ -273,7 +259,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._vinylWrapper.set_pivot_point(0.5, 0.5);
 
-        // Imagem da capa do álbum dentro do vinil
         const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
         this._vinylArtBin = new St.Bin({
             width: 68,
@@ -283,17 +268,15 @@ class YTMusicHybridApplet extends Applet.Applet {
             style: `border-radius: 999px; background-image: url("file://${defaultIconPath}"); background-size: cover;`
         });
 
-        // Furinho central do disco de vinil
         this._vinylHole = new St.Widget({
             style_class: "ytm-vinyl-hole",
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER
         });
 
-        this._vinylWrapper.add_child(this._vinylArtBin);
-        this._vinylWrapper.add_child(this._vinylHole);
+        this._vinylWrapper.add_actor(this._vinylArtBin);
+        this._vinylWrapper.add_actor(this._vinylHole);
 
-        // Coluna de Textos (Badge YouTube Music + Música + Cantor + Álbum)
         const metaCol = new St.BoxLayout({
             vertical: true,
             x_expand: true,
@@ -317,15 +300,15 @@ class YTMusicHybridApplet extends Applet.Applet {
             style_class: "ytm-badge-text",
             text: "YOUTUBE MUSIC"
         });
-        this._badgePill.add_child(this._badgeDot);
-        this._badgePill.add_child(this._badgeLabel);
-        badgeRow.add_child(this._badgePill);
+        this._badgePill.add_actor(this._badgeDot);
+        this._badgePill.add_actor(this._badgeLabel);
+        badgeRow.add_actor(this._badgePill);
 
         this._titleLabel = new St.Label({
             style_class: "ytm-track-title",
             text: this._title
         });
-        this._titleLabel.clutter_text.set_ellipsize(3); // PANGO_ELLIPSIZE_END
+        this._titleLabel.clutter_text.set_ellipsize(3);
 
         this._artistLabel = new St.Label({
             style_class: "ytm-track-artist",
@@ -339,15 +322,15 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._albumLabel.clutter_text.set_ellipsize(3);
 
-        metaCol.add_child(badgeRow);
-        metaCol.add_child(this._titleLabel);
-        metaCol.add_child(this._artistLabel);
-        metaCol.add_child(this._albumLabel);
+        metaCol.add_actor(badgeRow);
+        metaCol.add_actor(this._titleLabel);
+        metaCol.add_actor(this._artistLabel);
+        metaCol.add_actor(this._albumLabel);
 
-        headerRow.add_child(this._vinylWrapper);
-        headerRow.add_child(metaCol);
+        headerRow.add_actor(this._vinylWrapper);
+        headerRow.add_actor(metaCol);
 
-        // --- Linha de Progresso Interativa (Tempo Atual + Barra Clicável + Duração) ---
+        // --- Linha de Progresso Interativa ---
         const progressRow = new St.BoxLayout({
             style_class: "ytm-progress-row",
             vertical: false,
@@ -381,11 +364,11 @@ class YTMusicHybridApplet extends Applet.Applet {
             text: "0:00"
         });
 
-        progressRow.add_child(this._currentTimeLabel);
-        progressRow.add_child(this._progressTrack);
-        progressRow.add_child(this._totalTimeLabel);
+        progressRow.add_actor(this._currentTimeLabel);
+        progressRow.add_actor(this._progressTrack);
+        progressRow.add_actor(this._totalTimeLabel);
 
-        // --- Rodapé da Janelinha: Abrir App + Controles ⏮ ⏯ ⏭ + Volume ---
+        // --- Rodapé da Janelinha ---
         const footerRow = new St.BoxLayout({
             style_class: "ytm-popup-footer",
             vertical: false,
@@ -395,7 +378,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._openAppBtn = new St.Button({
             style_class: "ytm-open-app-btn",
             reactive: true,
-            label: "↗ Abrir Player"
+            label: "↗ Abrir YT Music"
         });
         this._openAppBtn.connect("clicked", () => {
             this.menu.close();
@@ -444,22 +427,22 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._popupNextBtn.connect("clicked", () => this._sendMprisCommand("Next"));
 
-        ctrlsBox.add_child(this._popupPrevBtn);
-        ctrlsBox.add_child(this._popupPlayBtn);
-        ctrlsBox.add_child(this._popupNextBtn);
+        ctrlsBox.add_actor(this._popupPrevBtn);
+        ctrlsBox.add_actor(this._popupPlayBtn);
+        ctrlsBox.add_actor(this._popupNextBtn);
 
         this._volumeLabel = new St.Label({
             style_class: "ytm-volume-chip",
             text: "🔊 100%"
         });
 
-        footerRow.add_child(this._openAppBtn);
-        footerRow.add_child(ctrlsBox);
-        footerRow.add_child(this._volumeLabel);
+        footerRow.add_actor(this._openAppBtn);
+        footerRow.add_actor(ctrlsBox);
+        footerRow.add_actor(this._volumeLabel);
 
-        this._popupCard.add_child(headerRow);
-        this._popupCard.add_child(progressRow);
-        this._popupCard.add_child(footerRow);
+        this._popupCard.add_actor(headerRow);
+        this._popupCard.add_actor(progressRow);
+        this._popupCard.add_actor(footerRow);
 
         const customSection = new PopupMenu.PopupBaseMenuItem({
             reactive: false,
@@ -472,7 +455,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 3. CONTROLE DE HOVER INTELIGENTE (ABRE AO PASSAR O MOUSE, COM GRACE)
+     * 3. CONTROLE DE HOVER INTELIGENTE
      * ====================================================================== */
     _scheduleHoverOpen() {
         this._cancelHoverClose();
@@ -485,6 +468,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._hoverOpenTimerId = Mainloop.timeout_add(delay, () => {
             this._hoverOpenTimerId = 0;
             if (this._pointerInPanel && !this.menu.isOpen) {
+                this._discoverPlayers();
                 this._syncPositionNow();
                 this.menu.open(true);
             }
@@ -516,7 +500,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 4. ANIMAÇÃO DE ROTAÇÃO DO VINIL (60 FPS QUANDO TOCANDO)
+     * 4. ANIMAÇÃO DE ROTAÇÃO DO VINIL
      * ====================================================================== */
     _updateAnimationState() {
         if (this._isPlaying) {
@@ -564,21 +548,31 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 5. INTEGRAÇÃO D-BUS MPRIS2 (YOUTUBE MUSIC / CHROME / BRAVE / PEAR)
+     * 5. INTEGRAÇÃO D-BUS MPRIS2 + AUTO-VINCULAÇÃO A QUALQUER PLAYER ATIVO
      * ====================================================================== */
     _initDBus() {
         try {
-            this._dbusProxy = new DBusProxy(Gio.DBus.session, DBUS_NAME, DBUS_PATH, (proxy, error) => {
-                if (error) {
-                    global.logError(`[ytmusic-player] Erro ao conectar ao DBus: ${error}`);
-                    return;
-                }
-                this._dbusProxy.connectSignal("NameOwnerChanged", (proxy, sender, [name, oldOwner, newOwner]) => {
-                    if (name.startsWith(MPRIS_PREFIX)) {
+            this._dbusSignalId = Gio.DBus.session.signal_subscribe(
+                DBUS_NAME,
+                DBUS_NAME,
+                "NameOwnerChanged",
+                DBUS_PATH,
+                null,
+                Gio.DBusSignalFlags.NONE,
+                (conn, sender, path, iface, signal, params) => {
+                    const [name] = params.deep_unpack();
+                    if (name && name.startsWith(MPRIS_PREFIX)) {
                         this._discoverPlayers();
                     }
-                });
+                }
+            );
+            this._discoverPlayers();
+
+            // Watchdog leve a cada 2.5s para detectar quando uma música começa a tocar
+            // em outro player (ex: Chrome App vs Electron App) e vincular automaticamente
+            this._pollWatchdogId = Mainloop.timeout_add(2500, () => {
                 this._discoverPlayers();
+                return GLib.SOURCE_CONTINUE;
             });
         } catch (e) {
             global.logError(`[ytmusic-player] Falha _initDBus: ${e}`);
@@ -586,40 +580,81 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     _discoverPlayers() {
-        if (!this._dbusProxy) return;
-        this._dbusProxy.ListNamesRemote(([names]) => {
-            if (!names) return;
-            const mprisNames = names.filter(n => n.startsWith(MPRIS_PREFIX));
-            if (mprisNames.length === 0) {
-                this._bindToPlayer(null);
-                return;
-            }
-
-            // Prioridade inteligente para YouTube Music (Pear Desktop, WebApp, Chromium/Brave/Firefox)
-            const scored = mprisNames.map(busName => {
-                const lower = busName.toLowerCase();
-                let score = 10;
-                if (lower.includes("youtube-music") || lower.includes("ytmusic") || lower.includes("pear")) {
-                    score = 100;
-                } else if (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox") || lower.includes("plasma-browser")) {
-                    score = 75;
+        try {
+            Gio.DBus.session.call(
+                DBUS_NAME,
+                DBUS_PATH,
+                DBUS_NAME,
+                "ListNames",
+                null,
+                new GLib.VariantType("(as)"),
+                Gio.DBusCallFlags.NONE,
+                1000,
+                null,
+                (conn, res) => {
+                    try {
+                        const reply = conn.call_finish(res);
+                        const [names] = reply.deep_unpack();
+                        const mprisNames = (names || []).filter(n => n.startsWith(MPRIS_PREFIX));
+                        if (mprisNames.length === 0) {
+                            this._bindToPlayer(null);
+                            return;
+                        }
+                        this._selectBestPlayer(mprisNames);
+                    } catch (_) {}
                 }
-                return { busName, score };
-            });
+            );
+        } catch (_) {}
+    }
 
-            scored.sort((a, b) => b.score - a.score);
+    _selectBestPlayer(mprisNames) {
+        // Avalia cada player MPRIS ativo olhando tanto o nome do bus quanto se está Playing
+        let bestBus = mprisNames[0];
+        let bestScore = -1;
 
-            if (this.playerFilter === "only-ytm") {
-                const ytmOnly = scored.find(s => s.score >= 75);
-                this._bindToPlayer(ytmOnly ? ytmOnly.busName : null);
-            } else {
-                this._bindToPlayer(scored[0].busName);
+        for (let i = 0; i < mprisNames.length; i++) {
+            const busName = mprisNames[i];
+            const lower = busName.toLowerCase();
+            let score = 10;
+
+            if (lower.includes("youtube-music") || lower.includes("ytmusic") || lower.includes("pear")) {
+                score += 100;
+            } else if (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox") || lower.includes("edge")) {
+                score += 75;
             }
-        });
+
+            try {
+                const p = Gio.DBusProxy.new_for_bus_sync(
+                    Gio.BusType.SESSION,
+                    Gio.DBusProxyFlags.NONE,
+                    null,
+                    busName,
+                    MPRIS_PATH,
+                    "org.mpris.MediaPlayer2.Player",
+                    null
+                );
+                const stVar = p.get_cached_property("PlaybackStatus");
+                if (stVar && stVar.deep_unpack() === "Playing") {
+                    score += 120; // Player tocando atualmente ganha máxima prioridade
+                }
+            } catch (_) {}
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestBus = busName;
+            }
+        }
+
+        this._bindToPlayer(bestBus);
     }
 
     _bindToPlayer(busName) {
-        if (this._activeBusName === busName) return;
+        if (this._activeBusName === busName) {
+            if (this._propsProxy) {
+                this._readPlayerProperties();
+            }
+            return;
+        }
 
         if (this._propsProxy && this._propsSignalId) {
             this._propsProxy.disconnect(this._propsSignalId);
@@ -627,14 +662,14 @@ class YTMusicHybridApplet extends Applet.Applet {
         }
 
         this._activeBusName = busName;
-        this._playerProxy = null;
         this._propsProxy = null;
 
         if (!busName) {
             this._isPlaying = false;
+            this._hasActiveTrack = false;
             this._title = "YouTube Music";
-            this._artist = "Nenhum player ativo";
-            this._album = "Clique para abrir music.youtube.com";
+            this._artist = "Clique no ícone para abrir o YouTube Music";
+            this._album = "Pronto para vincular automaticamente";
             this._durationUs = 0;
             this._positionUs = 0;
             this._refreshAllUI();
@@ -652,7 +687,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 null
             );
 
-            this._propsSignalId = this._propsProxy.connect("g-properties-changed", (proxy, changed, invalidated) => {
+            this._propsSignalId = this._propsProxy.connect("g-properties-changed", () => {
                 this._readPlayerProperties();
             });
 
@@ -686,10 +721,11 @@ class YTMusicHybridApplet extends Applet.Applet {
             const meta = metaVar.deep_unpack();
 
             if (meta["mpris:trackid"]) {
-                this._trackId = meta["mpris:trackid"].deep_unpack();
+                this._trackId = String(meta["mpris:trackid"].deep_unpack());
             }
             if (meta["xesam:title"]) {
-                this._title = meta["xesam:title"].deep_unpack() || "YouTube Music";
+                this._title = String(meta["xesam:title"].deep_unpack() || "YouTube Music");
+                this._hasActiveTrack = true;
             }
             if (meta["xesam:artist"]) {
                 const artists = meta["xesam:artist"].deep_unpack();
@@ -698,7 +734,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 this._artist = "YouTube Music";
             }
             if (meta["xesam:album"]) {
-                this._album = meta["xesam:album"].deep_unpack() || "YouTube Music";
+                this._album = String(meta["xesam:album"].deep_unpack() || "YouTube Music");
             } else {
                 this._album = "YouTube Music Streaming";
             }
@@ -710,7 +746,7 @@ class YTMusicHybridApplet extends Applet.Applet {
 
             let newArtUrl = "";
             if (meta["mpris:artUrl"]) {
-                newArtUrl = meta["mpris:artUrl"].deep_unpack();
+                newArtUrl = String(meta["mpris:artUrl"].deep_unpack());
             }
             if (newArtUrl && newArtUrl !== this._artUrl) {
                 this._artUrl = newArtUrl;
@@ -718,7 +754,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             }
         }
 
-        this._syncPositionNow();
         this._refreshAllUI();
     }
 
@@ -766,7 +801,6 @@ class YTMusicHybridApplet extends Applet.Applet {
                 return;
             }
 
-            // Download assíncrono via curl para compatibilidade universal (Soup2 / Soup3)
             Util.spawn_async(["curl", "-sL", "--max-time", "8", "-o", targetPath, artUrl], () => {
                 if (GLib.file_test(targetPath, GLib.FileTest.EXISTS)) {
                     this._applyLocalCoverFile(targetPath);
@@ -781,7 +815,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             `border-radius: 999px; background-image: url("file://${filePath}"); background-size: cover;`
         );
 
-        // Extrai a cor vibrante dominante da capa para o Glow Estilo 2
         try {
             const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(filePath, 16, 16, false);
             const pixels = pixbuf.get_pixels();
@@ -792,7 +825,6 @@ class YTMusicHybridApplet extends Applet.Applet {
                 const r = pixels[i];
                 const g = pixels[i + 1];
                 const b = pixels[i + 2];
-                // Ignora pixels muito pretos ou muito brancos para pegar a cor vibrante da capa
                 const brightness = (r + g + b) / 3;
                 if (brightness > 32 && brightness < 235) {
                     rSum += r;
@@ -806,8 +838,6 @@ class YTMusicHybridApplet extends Applet.Applet {
                 const r = Math.min(255, Math.round((rSum / count) * 1.15));
                 const g = Math.min(255, Math.round((gSum / count) * 1.15));
                 const b = Math.min(255, Math.round((bSum / count) * 1.15));
-                this._accentHex = `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
-                this._accentRgba = `rgba(${r}, ${g}, ${b}, 0.28)`;
                 this._applyDynamicGlow(r, g, b);
             }
         } catch (_) {}
@@ -838,10 +868,116 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 7. AÇÕES E ATUALIZAÇÃO DE INTERFACE
+     * 7. ABRIR E VINCULAR AO APP DO YOUTUBE MUSIC INSTALADO NO LINUX MINT
+     * ====================================================================== */
+    _raiseOrLaunchYTMusic() {
+        // 1. Se já existir uma janela do YouTube Music aberta no Cinnamon, traz ela para frente!
+        try {
+            const tracker = Cinnamon.WindowTracker.get_default();
+            const windows = global.get_window_actors();
+            for (let i = 0; i < windows.length; i++) {
+                const metaWin = windows[i].get_meta_window();
+                if (!metaWin) continue;
+                const title = (metaWin.get_title() || "").toLowerCase();
+                const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
+                if (
+                    title.includes("youtube music") ||
+                    wmClass.includes("youtube-music") ||
+                    wmClass.includes("ytmusic") ||
+                    wmClass.includes("pear-desktop") ||
+                    wmClass.includes("music.youtube.com")
+                ) {
+                    metaWin.activate(global.get_current_time());
+                    this._discoverPlayers();
+                    return;
+                }
+            }
+        } catch (_) {}
+
+        // 2. Se o player ativo suportar MPRIS Raise, aciona também
+        if (this._activeBusName) {
+            try {
+                Gio.DBus.session.call(
+                    this._activeBusName,
+                    MPRIS_PATH,
+                    "org.mpris.MediaPlayer2",
+                    "Raise",
+                    null,
+                    null,
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    null,
+                    null
+                );
+            } catch (_) {}
+        }
+
+        // 3. Procura o aplicativo do YouTube Music instalado no Linux Mint (Gio.AppInfo)
+        try {
+            const apps = Gio.AppInfo.get_all();
+            let matchedApp = null;
+
+            for (let i = 0; i < apps.length; i++) {
+                const app = apps[i];
+                const name = (app.get_name() || "").toLowerCase();
+                const disp = (app.get_display_name() || "").toLowerCase();
+                const id = (app.get_id() || "").toLowerCase();
+                const cmd = (app.get_commandline() || "").toLowerCase();
+
+                if (
+                    name.includes("youtube music") ||
+                    disp.includes("youtube music") ||
+                    id.includes("youtube-music") ||
+                    id.includes("ytmusic") ||
+                    id.includes("pear_desktop") ||
+                    cmd.includes("music.youtube.com") ||
+                    cmd.includes("youtube-music")
+                ) {
+                    matchedApp = app;
+                    break;
+                }
+            }
+
+            if (matchedApp) {
+                matchedApp.launch([], null);
+                this._schedulePostLaunchDiscovery();
+                return;
+            }
+        } catch (e) {
+            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
+        }
+
+        // 4. Fallback para comando customizado ou URL padrão
+        const custom = (this.ytmusicLaunchUrl || "auto").trim();
+        if (custom !== "auto" && custom !== "") {
+            if (custom.startsWith("http://") || custom.startsWith("https://")) {
+                Util.spawnCommandLine(`xdg-open "${custom}"`);
+            } else {
+                Util.spawnCommandLine(custom);
+            }
+        } else {
+            Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
+        }
+        this._schedulePostLaunchDiscovery();
+    }
+
+    _schedulePostLaunchDiscovery() {
+        // Verifica repetidamente nos próximos segundos para vincular assim que o app abrir
+        [800, 1800, 3200, 5000].forEach(delay => {
+            Mainloop.timeout_add(delay, () => {
+                this._discoverPlayers();
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+    }
+
+    /* ======================================================================
+     * 8. COMANDOS DE MÍDIA (PLAY, PAUSE, NEXT, PREV, SEEK, VOLUME)
      * ====================================================================== */
     _sendMprisCommand(methodName) {
+        this._discoverPlayers();
         if (!this._activeBusName) {
+            // Se o usuário clicou em Play e o app ainda não estava aberto, abre e vincula!
             this._raiseOrLaunchYTMusic();
             return;
         }
@@ -856,7 +992,12 @@ class YTMusicHybridApplet extends Applet.Applet {
                 Gio.DBusCallFlags.NONE,
                 -1,
                 null,
-                null
+                () => {
+                    Mainloop.timeout_add(150, () => {
+                        this._readPlayerProperties();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
             );
         } catch (e) {
             global.logError(`[ytmusic-player] Erro ao enviar ${methodName}: ${e}`);
@@ -922,28 +1063,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         } catch (_) {}
     }
 
-    _raiseOrLaunchYTMusic() {
-        if (this._activeBusName) {
-            try {
-                Gio.DBus.session.call(
-                    this._activeBusName,
-                    MPRIS_PATH,
-                    "org.mpris.MediaPlayer2",
-                    "Raise",
-                    null,
-                    null,
-                    Gio.DBusCallFlags.NONE,
-                    -1,
-                    null,
-                    null
-                );
-                return;
-            } catch (_) {}
-        }
-        const target = this.ytmusicLaunchUrl || "https://music.youtube.com";
-        Util.spawnCommandLine(`xdg-open "${target}"`);
-    }
-
     _formatTime(microSeconds) {
         const totalSec = Math.max(0, Math.floor(microSeconds / 1000000));
         const m = Math.floor(totalSec / 60);
@@ -970,6 +1089,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._albumLabel.set_text(this._album);
         this._volumeLabel.set_text(`🔊 ${Math.round((this._volume || 1) * 100)}%`);
 
+        this._updateBarCollapseState();
         this._updateProgressUI();
         this._updateAnimationState();
     }
@@ -977,8 +1097,10 @@ class YTMusicHybridApplet extends Applet.Applet {
     on_applet_removed_from_panel() {
         if (this._spinTimerId) Mainloop.source_remove(this._spinTimerId);
         if (this._posTimerId) Mainloop.source_remove(this._posTimerId);
+        if (this._pollWatchdogId) Mainloop.source_remove(this._pollWatchdogId);
         if (this._hoverOpenTimerId) Mainloop.source_remove(this._hoverOpenTimerId);
         if (this._hoverCloseTimerId) Mainloop.source_remove(this._hoverCloseTimerId);
+        if (this._dbusSignalId) Gio.DBus.session.signal_unsubscribe(this._dbusSignalId);
         if (this._propsProxy && this._propsSignalId) {
             this._propsProxy.disconnect(this._propsSignalId);
         }

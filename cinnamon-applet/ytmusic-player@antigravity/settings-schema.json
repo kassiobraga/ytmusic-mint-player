@@ -9,6 +9,16 @@
       "Estático": "none"
     }
   },
+  "collapse-when-idle": {
+    "type": "combobox",
+    "default": "when-not-playing",
+    "description": "Minimizar barrinha (mostrar apenas o ícone do YouTube Music)",
+    "options": {
+      "Quando não estiver tocando música (Pausado ou Fechado)": "when-not-playing",
+      "Apenas quando o YouTube Music estiver fechado": "when-closed",
+      "Sempre mostrar os botões Voltar / Play / Avançar": "never"
+    }
+  },
   "player-filter": {
     "type": "combobox",
     "default": "prefer-ytm",
@@ -39,7 +49,7 @@
   },
   "ytmusic-launch-url": {
     "type": "entry",
-    "default": "https://music.youtube.com",
-    "description": "URL ou comando ao clicar no ícone do YouTube Music quando nenhum player estiver aberto"
+    "default": "auto",
+    "description": "Comando personalizado (deixe 'auto' para detectar o app YouTube Music instalado no Linux Mint)"
   }
 }
