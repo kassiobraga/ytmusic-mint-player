@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Instalador Automático v2.1 - YouTube Music Taskbar Player
+# Instalador Automático v2.2 - YouTube Music Taskbar Player
+# - Instala wmctrl e xdotool para remover o ícone duplicado da barra central
+# - Aplica a v2.2 com lançamento direto via Gio.DesktopAppInfo (Profile 3)
 # ==============================================================================
 set -euo pipefail
 
@@ -10,45 +12,37 @@ APPLET_SRC="${SCRIPT_DIR}/cinnamon-applet/${UUID}"
 APPLET_DEST="${HOME}/.local/share/cinnamon/applets/${UUID}"
 
 echo "=================================================================="
-echo " 🎵 Instalando YouTube Music Taskbar Player v2.1"
+echo " 🎵 Instalando YouTube Music Taskbar Player v2.2"
 echo "=================================================================="
 
-# 1. Mata qualquer resquício do antigo ytm_window_helper.py que fechava/ocultava janelas
+# 0. Garantir wmctrl e xdotool para remover o ícone duplicado do YouTube Music da barra central
+MISSING=()
+command -v wmctrl >/dev/null 2>&1 || MISSING+=("wmctrl")
+command -v xdotool >/dev/null 2>&1 || MISSING+=("xdotool")
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo "📦 Instalando utilitários leves (${MISSING[*]}) para remover o ícone duplicado da barra central..."
+    sudo apt-get update -qq && sudo apt-get install -y -qq "${MISSING[@]}" || true
+fi
+
+# 1. Limpar resquícios legados
 pkill -9 -f "[y]tm_window_helper.py" 2>/dev/null || true
 rm -f "${XDG_RUNTIME_DIR:-/tmp}/ytmusic-mint-hidden-xids" "${XDG_RUNTIME_DIR:-/tmp}/ytmusic-mint-window-cmd" 2>/dev/null || true
 
-# 2. Copia os arquivos limpos da v2.1
+# 2. Copiar arquivos limpos da v2.2
 mkdir -p "${HOME}/.local/share/cinnamon/applets"
 rm -rf "${APPLET_DEST}"
 cp -r "${APPLET_SRC}" "${APPLET_DEST}"
-rm -f "${APPLET_DEST}/ytm_window_helper.py" 2>/dev/null || true
 chmod +x "${APPLET_DEST}/launch_ytmusic.sh"
-echo "✅ [1/3] Applet v2.1 copiado para: ${APPLET_DEST}"
+echo "✅ [1/3] Applet v2.2 instalado em: ${APPLET_DEST}"
 
-# 3. Mostra exatamente qual atalho da Área de Trabalho ou perfil do Chrome será usado
-/usr/bin/python3 - <<'PYCHECK'
-import glob, os, re
-dirs = [os.path.expanduser("~/Área de trabalho"), os.path.expanduser("~/Área de Trabalho"), os.path.expanduser("~/Desktop")]
-found = False
-for d in dirs:
-    if not os.path.isdir(d):
-        continue
-    for path in glob.glob(os.path.join(d, "*.desktop")):
-        try:
-            txt = open(path, encoding="utf-8", errors="ignore").read()
-            if "youtube music" in txt.lower() or "cinhimbnkkaeohfgghhklpknlkffjgod" in txt.lower():
-                m = re.search(r"^Exec=(.+)$", txt, re.MULTILINE)
-                print(f"🎯 [Atalho Área de Trabalho detectado]: {os.path.basename(path)}")
-                if m:
-                    print(f"   Exec: {m.group(1).strip()}")
-                found = True
-        except Exception:
-            pass
-if not found:
-    print("ℹ️  Nenhum .desktop do YouTube Music encontrado na Área de Trabalho (usará perfil cassio26@gmail / Profile 3).")
-PYCHECK
+# 3. Se o YouTube Music PWA já estiver aberto agora, já tira o ícone duplicado da barra central
+if command -v xdotool >/dev/null 2>&1 && command -v wmctrl >/dev/null 2>&1; then
+    for id in $(xdotool search --classname "^crx_cinhimbnkkaeohfgghhklpknlkffjgod$" 2>/dev/null || true); do
+        wmctrl -i -r "$id" -b add,skip_taskbar 2>/dev/null || true
+    done
+fi
 
-# 4. Ativa na Zona Esquerda da barra se ainda não estiver ativo
+# 4. Ativar na Zona Esquerda da barra se ainda não estiver ativo
 if command -v gsettings >/dev/null 2>&1; then
     /usr/bin/python3 - <<'PYEOF'
 import ast, subprocess
@@ -69,12 +63,12 @@ except Exception as e:
 PYEOF
 fi
 
-# 5. Força recarregamento real do Applet no Cinnamon (v2.1)
+# 5. Recarregar o Applet no Cinnamon via D-Bus
 if command -v dbus-send >/dev/null 2>&1; then
     dbus-send --session --dest=org.Cinnamon --type=method_call \
         /org/Cinnamon org.Cinnamon.ReloadSpices string:"applet" string:"${UUID}" >/dev/null 2>&1 || \
     dbus-send --session --dest=org.Cinnamon --type=method_call \
         /org/Cinnamon org.Cinnamon.ReloadSpices string:"applet" >/dev/null 2>&1 || true
-    echo "✅ [3/3] Cinnamon recarregou a v2.1!"
+    echo "✅ [3/3] Cinnamon recarregou a v2.2!"
 fi
 echo "=================================================================="

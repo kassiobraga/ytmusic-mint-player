@@ -1,23 +1,25 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid v2.0) - Cinnamon Applet
+ * YouTube Music Taskbar Player (Hybrid v2.2) - Cinnamon Applet
  * UUID: ytmusic-player@antigravity
  *
- * Correções Críticas v2.0:
- *  1. Isolamento Absoluto de Janela (Zero conflito com Antigravity):
- *     - NUNCA busca janelas por título ("YouTube Music"), evitando que
- *       janelas do Antigravity ou abas do navegador sejam abertas/fechadas.
- *     - Identifica a janela do YouTube Music EXCLUSIVAMENTE pelo WM_CLASS
- *       exato do PWA (`crx_cinhimbnkkaeohfgghhklpknlkffjgod`).
- *  2. Seleção Automática da Conta Pessoal (YouTube Premium - cassio26@gmail):
- *     - `launch_ytmusic.sh` lê `~/.config/google-chrome/Local State`, localiza
- *       o perfil Chrome da conta pessoal (`cassio26@gmail` / `Profile 3`) e
- *       abre o YouTube Music sempre na conta com Premium (nunca na ALK Agência).
- *  3. Filtro Estrito contra YouTube Normal (www.youtube.com):
- *     - Só vincula áudio que seja genuinamente do YouTube Music.
- *  4. Padrão Visual:
- *     - 100% Sans-Serif, Primeira Letra Maiúscula ("YouTube Music" sem corte),
- *       capa do álbum quadrada e estática na janelinha Hover, e ícone de vinil
- *       girando apenas na barra.
+ * Arquitetura v2.2 (Solução Definitiva):
+ *  1. Zero Ícone Duplicado na Barra Central (`skip_taskbar` via X11):
+ *     Assim que a janela EXATA do PWA (`crx_cinhimbnkkaeohfgghhklpknlkffjgod`)
+ *     é aberta, marcamos somente ELA com `_NET_WM_STATE_SKIP_TASKBAR` via
+ *     `wmctrl` (usando apenas o XID exato do `crx_cinhimbnkkaeohfgghhklpknlkffjgod`).
+ *     Resultado: o ícone vermelho duplicado SOME da barra central de tarefas,
+ *     deixando o YouTube Music integrado 100% apenas na nossa barrinha à esquerda!
+ *  2. Lançamento 100% Confiável quando o App está Fechado:
+ *     Usa `Gio.DesktopAppInfo` + `GLib.spawn_command_line_async` diretamente
+ *     (sem `Util.spawn_async` que bloqueava em subshells), abrindo na hora o
+ *     atalho `chrome-cinhimbnkkaeohfgghhklpknlkffjgod-Profile_3.desktop` (conta
+ *     pessoal Cássio Braga com YouTube Premium).
+ *  3. Toggle Mostrar / Ocultar em 2º Plano (Exclusivo da janela do PWA):
+ *     - Se o PWA está fechado -> Abre o PWA na conta pessoal (`Profile 3`).
+ *     - Se o PWA está aberto e focado -> Minimiza só o PWA (como ele tem
+ *       `skip_taskbar`, some da tela e da barra central, continuando tocando!).
+ *     - Se o PWA está minimizado/atrás -> Traz só o PWA para frente!
+ *     - NUNCA busca por título e NUNCA toca na janela do Antigravity!
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -29,7 +31,6 @@ const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Clutter = imports.gi.Clutter;
 const GdkPixbuf = imports.gi.GdkPixbuf;
-const Util = imports.misc.util;
 
 const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
@@ -62,6 +63,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._propsProxy = null;
         this._propsSignalId = 0;
         this._dbusSignalId = 0;
+        this._windowCreatedSignalId = 0;
 
         this._playbackStatus = "Stopped";
         this._isPlaying = false;
@@ -92,6 +94,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._buildPanelUI();
         this._buildHoverPopupUI();
         this._initDBus();
+        this._initTaskbarDeduplicator();
         this._updateBarCollapseState();
     }
 
@@ -128,7 +131,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
-        this._ytmIconBtn.connect("clicked", () => this._openOrFocusYTMusicWindow());
+        this._ytmIconBtn.connect("clicked", () => this._toggleOrLaunchYTMusicWindow());
 
         this._controlsBox = new St.BoxLayout({
             style_class: "ytm-panel-controls-box",
@@ -368,7 +371,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         });
         this._openAppBtn.connect("clicked", () => {
             this.menu.close();
-            this._openOrFocusYTMusicWindow();
+            this._toggleOrLaunchYTMusicWindow();
         });
 
         const ctrlsBox = new St.BoxLayout({
@@ -465,6 +468,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             if (this._pointerInPanel && !this.menu.isOpen) {
                 this._discoverPlayers();
                 this._syncPositionNow();
+                this._updateWindowButtonLabel();
                 this.menu.open(true);
             }
             return GLib.SOURCE_REMOVE;
@@ -540,28 +544,57 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 5. IDENTIFICAÇÃO ESTRITA DA JANELA DO PWA (NUNCA TOCA NO ANTIGRAVITY!)
+     * 5. ZERO DUPLICAÇÃO NA BARRA CENTRAL (`skip_taskbar` SOMENTE NO PWA!)
      * ====================================================================== */
+    _initTaskbarDeduplicator() {
+        // Aplica skip_taskbar imediatamente caso o YouTube Music já esteja aberto
+        this._applySkipTaskbarToPwa();
+
+        // Escuta novas janelas criadas no Cinnamon: se for o PWA do YouTube Music,
+        // remove automaticamente o ícone duplicado da barra central!
+        try {
+            if (global.display) {
+                this._windowCreatedSignalId = global.display.connect("window-created", (display, metaWin) => {
+                    if (this._isStrictYTMusicMetaWindow(metaWin)) {
+                        Mainloop.timeout_add(300, () => {
+                            this._applySkipTaskbarToPwa();
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    }
+                });
+            }
+        } catch (_) {}
+    }
+
+    _applySkipTaskbarToPwa() {
+        // Executa wmctrl/xdotool EXCLUSIVAMENTE nos XIDs cuja classe é crx_cinhimbnkkaeohfgghhklpknlkffjgod
+        // Isso remove o ícone vermelho duplicado da barra central de tarefas sem afetar nenhuma outra janela!
+        try {
+            const cmd = `/bin/bash -c 'for id in $(xdotool search --classname "^${YTM_WM_CLASS}$" 2>/dev/null); do wmctrl -i -r "$id" -b add,skip_taskbar 2>/dev/null; done'`;
+            GLib.spawn_command_line_async(cmd);
+        } catch (_) {}
+    }
+
+    _isStrictYTMusicMetaWindow(metaWin) {
+        if (!metaWin) return false;
+        const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
+        const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
+        return (
+            wmClass === YTM_WM_CLASS ||
+            wmInst === YTM_WM_CLASS ||
+            wmClass.includes(YTM_CHROME_APP_ID) ||
+            wmInst.includes(YTM_CHROME_APP_ID) ||
+            wmClass === "youtube-music" ||
+            wmClass === "pear-desktop"
+        );
+    }
+
     _findStrictYTMusicPwaWindow() {
-        // IMPORTANTE: NUNCA verifica title.includes("youtube music")!
-        // Verifica EXCLUSIVAMENTE o WM_CLASS / WM_CLASS_INSTANCE exato do app
-        // YouTube Music PWA (`crx_cinhimbnkkaeohfgghhklpknlkffjgod`).
         try {
             const windows = global.get_window_actors();
             for (let i = 0; i < windows.length; i++) {
                 const metaWin = windows[i].get_meta_window();
-                if (!metaWin) continue;
-                const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
-                const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
-
-                if (
-                    wmClass === YTM_WM_CLASS ||
-                    wmInst === YTM_WM_CLASS ||
-                    wmClass.includes(YTM_CHROME_APP_ID) ||
-                    wmInst.includes(YTM_CHROME_APP_ID) ||
-                    wmClass === "youtube-music" ||
-                    wmClass === "pear-desktop"
-                ) {
+                if (this._isStrictYTMusicMetaWindow(metaWin)) {
                     return metaWin;
                 }
             }
@@ -569,40 +602,86 @@ class YTMusicHybridApplet extends Applet.Applet {
         return null;
     }
 
-    _openOrFocusYTMusicWindow() {
-        // 1. Se a janela EXATA do PWA do YouTube Music já estiver aberta, apenas traz ela para frente!
+    _updateWindowButtonLabel() {
+        const metaWin = this._findStrictYTMusicPwaWindow();
+        if (metaWin && !metaWin.minimized) {
+            this._openAppBtn.set_label("🗕 Minimizar player");
+        } else {
+            this._openAppBtn.set_label("↗ Abrir player");
+        }
+    }
+
+    _toggleOrLaunchYTMusicWindow() {
+        // 1. Se a janela EXATA do PWA do YouTube Music já estiver aberta:
         const metaWin = this._findStrictYTMusicPwaWindow();
         if (metaWin) {
+            this._applySkipTaskbarToPwa();
             try {
-                metaWin.unminimize(global.get_current_time());
-                metaWin.activate(global.get_current_time());
+                if (!metaWin.minimized && metaWin.has_focus()) {
+                    // Minimiza a janela: como tem skip_taskbar, some da tela e da barra central,
+                    // mas continua tocando música perfeitamente na nossa barrinha!
+                    metaWin.minimize();
+                } else {
+                    metaWin.unminimize(global.get_current_time());
+                    metaWin.activate(global.get_current_time());
+                }
             } catch (_) {}
+            this._updateWindowButtonLabel();
             this._discoverPlayers();
             return;
         }
 
-        // 2. Se não estiver aberta, chama launch_ytmusic.sh passando o e-mail pessoal
-        //    (cassio26@gmail) para abrir EXCLUSIVAMENTE no perfil com YouTube Premium!
-        const launcherScript = GLib.build_filenamev([this.metadata.path, "launch_ytmusic.sh"]);
-        const preferredEmail = (this.preferredAccountEmail || "cassio26@gmail").trim();
-        if (GLib.file_test(launcherScript, GLib.FileTest.EXISTS)) {
-            Util.spawn_async(["/bin/bash", launcherScript, preferredEmail], () => {
-                this._schedulePostLaunchDiscovery();
-            });
-            return;
-        }
-
-        // Fallback direto para Profile 3
-        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
-            Util.spawnCommandLine(`/opt/google/chrome/google-chrome "--profile-directory=Profile 3" --app-id=${YTM_CHROME_APP_ID}`);
-        }
-        this._schedulePostLaunchDiscovery();
+        // 2. Se o YouTube Music está FECHADO: abre diretamente via GLib/Gio (100% garantido!)
+        this._launchYTMusicPwaDirect();
     }
 
-    _schedulePostLaunchDiscovery() {
-        [700, 1600, 2800, 4200].forEach(delay => {
+    _launchYTMusicPwaDirect() {
+        // Tentativa 1: Gio.DesktopAppInfo direto no atalho da conta pessoal (Profile 3)
+        const desktopCandidates = [
+            `chrome-${YTM_CHROME_APP_ID}-Profile_3.desktop`,
+            `chrome-${YTM_CHROME_APP_ID}-Default.desktop`
+        ];
+        for (let i = 0; i < desktopCandidates.length; i++) {
+            try {
+                const appInfo = Gio.DesktopAppInfo.new(desktopCandidates[i]);
+                if (appInfo) {
+                    appInfo.launch([], null);
+                    this._schedulePostLaunchTasks();
+                    return;
+                }
+            } catch (_) {}
+        }
+
+        // Tentativa 2: GLib.spawn_command_line_async direto no script launch_ytmusic.sh
+        const launcherScript = GLib.build_filenamev([this.metadata.path, "launch_ytmusic.sh"]);
+        const preferredEmail = (this.preferredAccountEmail || "cassio26@gmail").trim();
+        try {
+            if (GLib.file_test(launcherScript, GLib.FileTest.EXISTS)) {
+                GLib.spawn_command_line_async(`/bin/bash "${launcherScript}" "${preferredEmail}"`);
+                this._schedulePostLaunchTasks();
+                return;
+            }
+        } catch (e) {
+            global.logError(`[ytmusic-player] Erro ao chamar launch_ytmusic.sh: ${e}`);
+        }
+
+        // Tentativa 3: Comando direto do Google Chrome PWA no Profile 3
+        try {
+            GLib.spawn_command_line_async(
+                `/opt/google/chrome/google-chrome "--profile-directory=Profile 3" --app-id=${YTM_CHROME_APP_ID}`
+            );
+        } catch (e) {
+            global.logError(`[ytmusic-player] Erro no fallback Chrome: ${e}`);
+        }
+        this._schedulePostLaunchTasks();
+    }
+
+    _schedulePostLaunchTasks() {
+        [600, 1400, 2500, 4000].forEach(delay => {
             Mainloop.timeout_add(delay, () => {
+                this._applySkipTaskbarToPwa();
                 this._discoverPlayers();
+                this._updateWindowButtonLabel();
                 return GLib.SOURCE_REMOVE;
             });
         });
@@ -930,11 +1009,15 @@ class YTMusicHybridApplet extends Applet.Applet {
                 return;
             }
 
-            Util.spawn_async(["curl", "-sL", "--max-time", "8", "-o", targetPath, artUrl], () => {
-                if (GLib.file_test(targetPath, GLib.FileTest.EXISTS)) {
-                    this._applyLocalCoverFile(targetPath);
-                }
-            });
+            try {
+                GLib.spawn_command_line_async(`curl -sL --max-time 8 -o "${targetPath}" "${artUrl}"`);
+                Mainloop.timeout_add(900, () => {
+                    if (GLib.file_test(targetPath, GLib.FileTest.EXISTS)) {
+                        this._applyLocalCoverFile(targetPath);
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
+            } catch (_) {}
         }
     }
 
@@ -1002,7 +1085,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     _sendMprisCommand(methodName) {
         this._discoverPlayers();
         if (!this._activeBusName || !this._hasActiveTrack) {
-            this._openOrFocusYTMusicWindow();
+            this._toggleOrLaunchYTMusicWindow();
             return;
         }
         try {
@@ -1113,6 +1196,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._albumLabel.set_text(this._formatTitleCase(this._album));
         this._volumeLabel.set_text(`🔊 ${Math.round((this._volume || 1) * 100)}%`);
 
+        this._updateWindowButtonLabel();
         this._updateBarCollapseState();
         this._updateProgressUI();
         this._updateAnimationState();
@@ -1125,6 +1209,9 @@ class YTMusicHybridApplet extends Applet.Applet {
         if (this._hoverOpenTimerId) Mainloop.source_remove(this._hoverOpenTimerId);
         if (this._hoverCloseTimerId) Mainloop.source_remove(this._hoverCloseTimerId);
         if (this._dbusSignalId) Gio.DBus.session.signal_unsubscribe(this._dbusSignalId);
+        if (this._windowCreatedSignalId && global.display) {
+            global.display.disconnect(this._windowCreatedSignalId);
+        }
         if (this._propsProxy && this._propsSignalId) {
             this._propsProxy.disconnect(this._propsSignalId);
         }
