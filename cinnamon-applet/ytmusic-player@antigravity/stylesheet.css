@@ -1,0 +1,219 @@
+/* ==========================================================================
+   YouTube Music Taskbar Player (Hybrid Vinyl) - Cinnamon St Stylesheet
+   ========================================================================== */
+
+/* --- BARRA DE TAREFAS (ESTILO 1 LIMPO: ÍCONE YT MUSIC + 3 BOTÕES) --- */
+.ytm-panel-container {
+    background-color: rgba(28, 28, 33, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 7px;
+    padding: 2px 7px;
+    margin: 3px 4px;
+    spacing: 5px;
+    transition-duration: 180ms;
+}
+
+.ytm-panel-container:hover {
+    background-color: rgba(38, 38, 46, 0.98);
+    border-color: rgba(244, 63, 94, 0.55);
+    box-shadow: 0 0 10px rgba(225, 29, 72, 0.25);
+}
+
+.ytm-panel-icon-btn {
+    padding: 2px;
+    border-radius: 999px;
+}
+
+.ytm-panel-icon-pulse {
+    box-shadow: 0 0 8px rgba(255, 0, 51, 0.65);
+}
+
+.ytm-panel-divider {
+    width: 1px;
+    height: 15px;
+    background-color: rgba(255, 255, 255, 0.14);
+    margin: 0 2px;
+}
+
+.ytm-panel-btn {
+    padding: 4px 5px;
+    border-radius: 5px;
+    color: #d4d4d8;
+    transition-duration: 140ms;
+}
+
+.ytm-panel-btn:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+.ytm-panel-btn-play {
+    padding: 4px 6px;
+    border-radius: 999px;
+    background-color: #e11d48;
+    color: #ffffff;
+    box-shadow: 0 1px 6px rgba(225, 29, 72, 0.45);
+    transition-duration: 140ms;
+}
+
+.ytm-panel-btn-play:hover {
+    background-color: #f43f5e;
+    box-shadow: 0 2px 10px rgba(244, 63, 94, 0.65);
+}
+
+/* --- JANELINHA HOVER (ESTILO 2 DYNAMIC ISLAND + VINIL GIRANDO) --- */
+.ytm-popup-card {
+    width: 344px;
+    background-gradient-direction: vertical;
+    background-gradient-start: rgba(16, 16, 21, 0.97);
+    background-gradient-end: rgba(10, 10, 14, 0.99);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 16px;
+    padding: 15px 16px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.72);
+}
+
+.ytm-popup-header-row {
+    spacing: 14px;
+}
+
+.ytm-vinyl-wrapper {
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    background-color: #18181b;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
+}
+
+.ytm-vinyl-hole {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background-color: #09090b;
+    border: 1.5px solid rgba(255, 255, 255, 0.42);
+}
+
+.ytm-badge-pill {
+    background-color: rgba(225, 29, 72, 0.24);
+    border: 1px solid rgba(244, 63, 94, 0.4);
+    border-radius: 999px;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+}
+
+.ytm-badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background-color: #f43f5e;
+    margin-right: 5px;
+}
+
+.ytm-badge-text {
+    font-size: 9px;
+    font-weight: bold;
+    color: #fda4af;
+    letter-spacing: 0.6px;
+}
+
+.ytm-track-title {
+    font-size: 13.5px;
+    font-weight: bold;
+    color: #ffffff;
+    padding-bottom: 1px;
+}
+
+.ytm-track-artist {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #d4d4d8;
+}
+
+.ytm-track-album {
+    font-size: 10.5px;
+    color: #a1a1aa;
+}
+
+/* Barra de Progresso Interativa */
+.ytm-progress-row {
+    margin-top: 13px;
+    margin-bottom: 11px;
+    spacing: 8px;
+}
+
+.ytm-time-label {
+    font-size: 10px;
+    font-family: monospace;
+    color: #a1a1aa;
+    min-width: 30px;
+}
+
+.ytm-progress-track {
+    height: 6px;
+    background-color: rgba(255, 255, 255, 0.13);
+    border-radius: 999px;
+}
+
+.ytm-progress-fill {
+    height: 6px;
+    background-color: #e11d48;
+    border-radius: 999px;
+}
+
+/* Rodapé de Controles da Janelinha */
+.ytm-popup-footer {
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ytm-popup-ctrl-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.07);
+    color: #e4e4e7;
+    transition-duration: 140ms;
+}
+
+.ytm-popup-ctrl-btn:hover {
+    background-color: rgba(255, 255, 255, 0.18);
+    color: #ffffff;
+}
+
+.ytm-popup-play-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    background-color: #e11d48;
+    color: #ffffff;
+    box-shadow: 0 4px 14px rgba(225, 29, 72, 0.55);
+    transition-duration: 140ms;
+}
+
+.ytm-popup-play-btn:hover {
+    background-color: #f43f5e;
+    box-shadow: 0 6px 18px rgba(244, 63, 94, 0.75);
+}
+
+.ytm-open-app-btn {
+    padding: 4px 9px;
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    font-size: 10.5px;
+    color: #e4e4e7;
+    transition-duration: 140ms;
+}
+
+.ytm-open-app-btn:hover {
+    background-color: rgba(255, 255, 255, 0.14);
+    border-color: rgba(244, 63, 94, 0.45);
+    color: #ffffff;
+}
+
+.ytm-volume-chip {
+    font-size: 10px;
+    font-family: monospace;
+    color: #a1a1aa;
+}

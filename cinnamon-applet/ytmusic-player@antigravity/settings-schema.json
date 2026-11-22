@@ -1,0 +1,45 @@
+{
+  "icon-animation": {
+    "type": "combobox",
+    "default": "spin",
+    "description": "Animação do ícone do YouTube Music na barra quando estiver tocando",
+    "options": {
+      "Girando como Vinil (Recomendado)": "spin",
+      "Fixo Pulsando (Glow)": "pulse",
+      "Estático": "none"
+    }
+  },
+  "player-filter": {
+    "type": "combobox",
+    "default": "prefer-ytm",
+    "description": "Filtro de reprodutor de mídia (MPRIS2)",
+    "options": {
+      "Priorizar YouTube Music / Navegador (Com fallback para qualquer player ativo)": "prefer-ytm",
+      "Apenas YouTube Music": "only-ytm",
+      "Qualquer Player de Mídia (Spotify, VLC, Navegador, etc.)": "any"
+    }
+  },
+  "hover-delay-ms": {
+    "type": "spinbutton",
+    "default": 80,
+    "min": 0,
+    "max": 500,
+    "step": 20,
+    "units": "ms",
+    "description": "Tempo de resposta ao passar o mouse (Hover) para abrir a janelinha"
+  },
+  "hover-close-grace-ms": {
+    "type": "spinbutton",
+    "default": 280,
+    "min": 100,
+    "max": 1000,
+    "step": 20,
+    "units": "ms",
+    "description": "Tempo de tolerância ao tirar o mouse antes de fechar a janelinha"
+  },
+  "ytmusic-launch-url": {
+    "type": "entry",
+    "default": "https://music.youtube.com",
+    "description": "URL ou comando ao clicar no ícone do YouTube Music quando nenhum player estiver aberto"
+  }
+}
