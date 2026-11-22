@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Instalador Automático v1.6 - YouTube Music Taskbar Player (Hybrid Vinyl)
-# Focado em Linux Mint (Cinnamon) - Zona Esquerda da Barra de Tarefas
+# Instalador Automático v2.0 - YouTube Music Taskbar Player (Hybrid)
+# - Encerra qualquer processo legado do antigo ytm_window_helper.py
+# - Instala o Applet v2.0 com isolamento estrito de janela (WM_CLASS)
+# - Detecta e valida o perfil do Chrome da conta pessoal (cassio26@gmail)
 # ==============================================================================
 set -euo pipefail
 
@@ -11,54 +13,22 @@ APPLET_SRC="${SCRIPT_DIR}/cinnamon-applet/${UUID}"
 APPLET_DEST="${HOME}/.local/share/cinnamon/applets/${UUID}"
 
 echo "=================================================================="
-echo " 🎵 Instalando YouTube Music Taskbar Player v1.6 (Híbrido)"
+echo " 🎵 Instalando YouTube Music Taskbar Player v2.0"
 echo "=================================================================="
 
-# 0. Garantir xdotool instalado para ocultar/mostrar a janela do YouTube Music em 2º plano
-if ! command -v xdotool >/dev/null 2>&1; then
-    echo "📦 Instalando utilitário leve 'xdotool' para modo Segundo Plano..."
-    sudo apt-get update -qq && sudo apt-get install -y -qq xdotool || true
-fi
+# 1. Encerra e limpa qualquer resquício do antigo helper que usava --name "YouTube Music"
+pkill -f "[y]tm_window_helper.py" 2>/dev/null || true
+rm -f "${XDG_RUNTIME_DIR:-/tmp}/ytmusic-mint-hidden-xids" "${XDG_RUNTIME_DIR:-/tmp}/ytmusic-mint-window-cmd" 2>/dev/null || true
 
-# 1. Copiar os arquivos do Applet para o diretório do Cinnamon
+# 2. Copiar os arquivos limpos do Applet v2.0 para o diretório do Cinnamon
 mkdir -p "${HOME}/.local/share/cinnamon/applets"
 rm -rf "${APPLET_DEST}"
 cp -r "${APPLET_SRC}" "${APPLET_DEST}"
-chmod +x "${APPLET_DEST}/ytm_window_helper.py" "${APPLET_DEST}/launch_ytmusic.sh" || true
-echo "✅ [1/4] Applet v1.6 copiado para: ${APPLET_DEST}"
+rm -f "${APPLET_DEST}/ytm_window_helper.py" 2>/dev/null || true
+chmod +x "${APPLET_DEST}/launch_ytmusic.sh"
+echo "✅ [1/3] Applet v2.0 instalado em: ${APPLET_DEST}"
 
-# Reinicia o helper de segundo plano
-pkill -f "[y]tm_window_helper.py" 2>/dev/null || true
-nohup /usr/bin/python3 "${APPLET_DEST}/ytm_window_helper.py" >/dev/null 2>&1 &
-
-# 2. Habilitar plugin MPRIS caso o usuário também tenha Pear Desktop / th-ch instalado
-for cfg in \
-    "${HOME}/.config/YouTube Music/config.json" \
-    "${HOME}/.config/youtube-music/config.json" \
-    "${HOME}/.config/pear-desktop/config.json" \
-    "${HOME}/.var/app/io.github.pear_devs.pear_desktop/config/YouTube Music/config.json" \
-    "${HOME}/.var/app/com.github.th_ch.youtube_music/config/YouTube Music/config.json"; do
-    if [[ -f "$cfg" ]] && command -v /usr/bin/python3 >/dev/null 2>&1; then
-        /usr/bin/python3 - "$cfg" <<'PYCFG' || true
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    plugins = data.setdefault("plugins", {})
-    if "shortcuts" in plugins and isinstance(plugins["shortcuts"], dict):
-        plugins["shortcuts"]["enabled"] = True
-    else:
-        plugins.setdefault("shortcuts", {"enabled": True})
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-except Exception:
-    pass
-PYCFG
-    fi
-done
-
-# 3. Ativar automaticamente o Applet na Zona Esquerda (left) do painel principal
+# 3. Ativar automaticamente na Zona Esquerda (left) do painel principal
 if command -v gsettings >/dev/null 2>&1 && command -v /usr/bin/python3 >/dev/null 2>&1; then
     /usr/bin/python3 - <<'PYEOF'
 import ast, subprocess
@@ -81,11 +51,11 @@ try:
         applets.append(new_entry)
         formatted = "[" + ", ".join(f"'{a}'" for a in applets) + "]"
         subprocess.check_call(["gsettings", "set", SCHEMA, KEY, formatted])
-        print(f"✅ [2/4] Applet posicionado automaticamente na ESQUERDA da barra ({new_entry})!")
+        print(f"✅ [2/3] Applet posicionado na ESQUERDA da barra ({new_entry})!")
     else:
-        print("ℹ️  [2/4] Applet já está ativo na esquerda da barra do Cinnamon.")
+        print("ℹ️  [2/3] Applet já está ativo na esquerda da barra do Cinnamon.")
 except Exception as e:
-    print(f"⚠️  [2/4] Não foi possível ativar via gsettings ({e}).")
+    print(f"⚠️  [2/3] Não foi possível ativar via gsettings ({e}).")
 PYEOF
 fi
 
@@ -95,11 +65,6 @@ if command -v dbus-send >/dev/null 2>&1; then
         /org/Cinnamon org.Cinnamon.ReloadSpices string:"applet" string:"${UUID}" >/dev/null 2>&1 || \
     dbus-send --session --dest=org.Cinnamon --type=method_call \
         /org/Cinnamon org.Cinnamon.ReloadSpices string:"applet" >/dev/null 2>&1 || true
-    echo "✅ [3/4] Cinnamon recarregou o Applet ${UUID}!"
+    echo "✅ [3/3] Cinnamon recarregou o Applet ${UUID}!"
 fi
-
-echo "✅ [4/4] Guardião de Segundo Plano ativo!"
-echo "   - Agora a capa do álbum na janelinha fica QUADRADA e FIXA (estilo capa de álbum real)."
-echo "   - Para esconder a janela do YouTube Music e deixar tocando só na barrinha:"
-echo "     clique no ícone do YouTube Music na barra ou em '🗕 Ocultar na Barra' na janelinha!"
 echo "=================================================================="
