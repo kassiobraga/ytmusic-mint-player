@@ -1,9 +1,13 @@
 /* ==========================================================================
-   YouTube Music Taskbar Player (Hybrid v1.4) - Cinnamon St Stylesheet
+   YouTube Music Taskbar Player (Hybrid v1.6) - Cinnamon St Stylesheet
+   Padrão Visual do Usuário:
+     - Fontes 100% Sans-Serif em todos os elementos (zero serif/monospace)
+     - Textos em Title Case / Primeira letra maiúscula (zero ALL CAPS)
    ========================================================================== */
 
 /* --- BARRA DE TAREFAS (ESTILO 1 LIMPO + AUTO-COLLAPSE QUANDO PARADO) --- */
 .ytm-panel-container {
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
     background-color: rgba(28, 28, 33, 0.92);
     border: 1px solid rgba(255, 255, 255, 0.11);
     border-radius: 7px;
@@ -14,6 +18,7 @@
 }
 
 .ytm-panel-container-compact {
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
     background-color: rgba(28, 28, 33, 0.85);
     border: 1px solid rgba(255, 255, 255, 0.09);
     border-radius: 999px;
@@ -78,13 +83,14 @@
 
 /* --- JANELINHA HOVER (ESTILO 2 DYNAMIC ISLAND + CAPA DO ÁLBUM QUADRADA ESTÁTICA) --- */
 .ytm-popup-card {
-    width: 348px;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    width: 356px;
     background-gradient-direction: vertical;
     background-gradient-start: rgba(16, 16, 21, 0.97);
     background-gradient-end: rgba(10, 10, 14, 0.99);
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 16px;
-    padding: 15px 16px;
+    padding: 16px 18px;
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.72);
 }
 
@@ -103,11 +109,12 @@
 }
 
 .ytm-badge-pill {
-    background-color: rgba(225, 29, 72, 0.24);
-    border: 1px solid rgba(244, 63, 94, 0.4);
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    background-color: rgba(225, 29, 72, 0.22);
+    border: 1px solid rgba(244, 63, 94, 0.42);
     border-radius: 999px;
-    padding: 2px 8px;
-    margin-bottom: 4px;
+    padding: 3px 10px;
+    margin-bottom: 5px;
 }
 
 .ytm-badge-dot {
@@ -115,31 +122,36 @@
     height: 6px;
     border-radius: 999px;
     background-color: #f43f5e;
-    margin-right: 5px;
+    margin-right: 6px;
 }
 
 .ytm-badge-text {
-    font-size: 9px;
-    font-weight: bold;
-    color: #fda4af;
-    letter-spacing: 0.6px;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fecdd3;
 }
 
 .ytm-track-title {
-    font-size: 13.5px;
-    font-weight: bold;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
     color: #ffffff;
-    padding-bottom: 1px;
+    padding-bottom: 2px;
 }
 
 .ytm-track-artist {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: #d4d4d8;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    color: #e4e4e7;
+    padding-bottom: 1px;
 }
 
 .ytm-track-album {
-    font-size: 10.5px;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 11px;
+    font-weight: 400;
     color: #a1a1aa;
 }
 
@@ -151,10 +163,11 @@
 }
 
 .ytm-time-label {
-    font-size: 10px;
-    font-family: monospace;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 10.5px;
+    font-weight: 500;
     color: #a1a1aa;
-    min-width: 30px;
+    min-width: 32px;
 }
 
 .ytm-progress-track {
@@ -171,7 +184,7 @@
 
 /* Rodapé de Controles da Janelinha */
 .ytm-popup-footer {
-    padding-top: 8px;
+    padding-top: 9px;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -205,23 +218,26 @@
 }
 
 .ytm-open-app-btn {
-    padding: 4px 9px;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    padding: 5px 11px;
     border-radius: 8px;
-    background-color: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    font-size: 10.5px;
-    color: #e4e4e7;
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    font-size: 11px;
+    font-weight: 600;
+    color: #f4f4f5;
     transition-duration: 140ms;
 }
 
 .ytm-open-app-btn:hover {
-    background-color: rgba(255, 255, 255, 0.14);
-    border-color: rgba(244, 63, 94, 0.45);
+    background-color: rgba(225, 29, 72, 0.25);
+    border-color: rgba(244, 63, 94, 0.55);
     color: #ffffff;
 }
 
 .ytm-volume-chip {
-    font-size: 10px;
-    font-family: monospace;
+    font-family: "Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 11px;
+    font-weight: 500;
     color: #a1a1aa;
 }

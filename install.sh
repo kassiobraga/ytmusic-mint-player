@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Instalador Automático v1.4 - YouTube Music Taskbar Player (Hybrid Vinyl)
+# Instalador Automático v1.6 - YouTube Music Taskbar Player (Hybrid Vinyl)
 # Focado em Linux Mint (Cinnamon) - Zona Esquerda da Barra de Tarefas
 # ==============================================================================
 set -euo pipefail
@@ -11,7 +11,7 @@ APPLET_SRC="${SCRIPT_DIR}/cinnamon-applet/${UUID}"
 APPLET_DEST="${HOME}/.local/share/cinnamon/applets/${UUID}"
 
 echo "=================================================================="
-echo " 🎵 Instalando YouTube Music Taskbar Player v1.4 (Híbrido)"
+echo " 🎵 Instalando YouTube Music Taskbar Player v1.6 (Híbrido)"
 echo "=================================================================="
 
 # 0. Garantir xdotool instalado para ocultar/mostrar a janela do YouTube Music em 2º plano
@@ -24,11 +24,11 @@ fi
 mkdir -p "${HOME}/.local/share/cinnamon/applets"
 rm -rf "${APPLET_DEST}"
 cp -r "${APPLET_SRC}" "${APPLET_DEST}"
-chmod +x "${APPLET_DEST}/ytm_window_helper.py" || true
-echo "✅ [1/4] Applet v1.4 copiado para: ${APPLET_DEST}"
+chmod +x "${APPLET_DEST}/ytm_window_helper.py" "${APPLET_DEST}/launch_ytmusic.sh" || true
+echo "✅ [1/4] Applet v1.6 copiado para: ${APPLET_DEST}"
 
 # Reinicia o helper de segundo plano
-pkill -f "ytm_window_helper.py" 2>/dev/null || true
+pkill -f "[y]tm_window_helper.py" 2>/dev/null || true
 nohup /usr/bin/python3 "${APPLET_DEST}/ytm_window_helper.py" >/dev/null 2>&1 &
 
 # 2. Habilitar plugin MPRIS caso o usuário também tenha Pear Desktop / th-ch instalado

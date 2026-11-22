@@ -1,19 +1,16 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid v1.5) - Cinnamon Applet
+ * YouTube Music Taskbar Player (Hybrid v1.6) - Cinnamon Applet
  * UUID: ytmusic-player@antigravity
  *
- * Novidades v1.5 (Isolamento 100% Exclusivo do YouTube Music):
- *  - NÃO mistura mais vídeos do YouTube normal (youtube.com) ou de outras abas
- *    do navegador Chrome com o YouTube Music!
- *  - Isolamento de Processo + Filtro Estrito de Metadados MPRIS2:
- *    1. Quando o Applet abre o seu WebApp do YouTube Music, ele usa um
- *       diretório de sessão dedicado (`~/.config/ytmusic-mint-pwa`), fazendo o
- *       Linux criar um barramento MPRIS2 exclusivo separado do seu navegador!
- *    2. Mesmo quando o YouTube Music estiver aberto no mesmo processo do Chrome,
- *       o Applet inspeciona os metadados MPRIS2 + título da janela do PWA
- *       (`crx_cinhimbnkkaeohfgghhklpknlkffjgod`) para REJEITAR qualquer vídeo
- *       do YouTube normal (onde `xesam:album` é vazio e `artUrl` vem de `i.ytimg.com`
- *       ou o título não pertence à janela do app YouTube Music).
+ * Novidades v1.6:
+ *  1. Tipografia & Padrão de Texto do Usuário:
+ *     - 100% Fontes Sans-Serif ("Inter", "Ubuntu", "Cantarell", "Noto Sans", sans-serif).
+ *     - Zero caixa alta (ALL CAPS): o selo no topo agora é "YouTube Music" (com
+ *       a primeira letra maiúscula e largura fluida sem cortar nenhuma letra!).
+ *  2. Botão "Abrir player" 100% Funcional:
+ *     - Usa o script dedicado `launch_ytmusic.sh` com `gtk-launch` / `google-chrome`
+ *       e `xdotool windowactivate` + `Cinnamon.WindowTracker` para sempre abrir ou
+ *       trazer a janela do YouTube Music para frente imediatamente ao clicar.
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -68,8 +65,8 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         this._trackId = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
         this._title = "YouTube Music";
-        this._artist = "Clique no ícone para abrir o YouTube Music";
-        this._album = "Exclusivo para YouTube Music";
+        this._artist = "Clique em Abrir player para iniciar";
+        this._album = "Player exclusivo do YouTube Music";
         this._artUrl = "";
         this._cachedArtPath = null;
         this._durationUs = 0;
@@ -128,7 +125,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
-        this._ytmIconBtn.connect("clicked", () => this._toggleOrLaunchYTMusicWindow());
+        this._ytmIconBtn.connect("clicked", () => this._openOrFocusYTMusicWindow());
 
         this._controlsBox = new St.BoxLayout({
             style_class: "ytm-panel-controls-box",
@@ -221,7 +218,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 2. JANELINHA HOVER (CAPA DO ÁLBUM QUADRADA ESTÁTICA + GLOW + SEEK)
+     * 2. JANELINHA HOVER (SANS-SERIF + PRIMEIRA LETRA MAIÚSCULA + CAPA FIXA)
      * ====================================================================== */
     _buildHoverPopupUI() {
         this.menuManager = new PopupMenu.PopupMenuManager(this);
@@ -269,40 +266,44 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         const badgeRow = new St.BoxLayout({
             vertical: false,
+            x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER
         });
         this._badgePill = new St.BoxLayout({
             style_class: "ytm-badge-pill",
             vertical: false,
+            x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER
         });
         this._badgeDot = new St.Widget({
             style_class: "ytm-badge-dot",
             y_align: Clutter.ActorAlign.CENTER
         });
+        // Primeira letra maiúscula (Title Case), sem caixa alta e sem truncamento!
         this._badgeLabel = new St.Label({
             style_class: "ytm-badge-text",
-            text: "YOUTUBE MUSIC"
+            text: "YouTube Music"
         });
+        this._badgeLabel.clutter_text.set_ellipsize(0); // PANGO_ELLIPSIZE_NONE (Nunca cortar!)
         this._badgePill.add_actor(this._badgeDot);
         this._badgePill.add_actor(this._badgeLabel);
         badgeRow.add_actor(this._badgePill);
 
         this._titleLabel = new St.Label({
             style_class: "ytm-track-title",
-            text: this._title
+            text: this._formatTitleCase(this._title)
         });
         this._titleLabel.clutter_text.set_ellipsize(3);
 
         this._artistLabel = new St.Label({
             style_class: "ytm-track-artist",
-            text: this._artist
+            text: this._formatTitleCase(this._artist)
         });
         this._artistLabel.clutter_text.set_ellipsize(3);
 
         this._albumLabel = new St.Label({
             style_class: "ytm-track-album",
-            text: this._album
+            text: this._formatTitleCase(this._album)
         });
         this._albumLabel.clutter_text.set_ellipsize(3);
 
@@ -360,11 +361,12 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._openAppBtn = new St.Button({
             style_class: "ytm-open-app-btn",
             reactive: true,
-            label: "🗕 Ocultar na Barra"
+            can_focus: true,
+            label: "↗ Abrir player"
         });
         this._openAppBtn.connect("clicked", () => {
             this.menu.close();
-            this._toggleOrLaunchYTMusicWindow();
+            this._openOrFocusYTMusicWindow();
         });
 
         const ctrlsBox = new St.BoxLayout({
@@ -436,6 +438,17 @@ class YTMusicHybridApplet extends Applet.Applet {
         this.menu.addMenuItem(customSection);
     }
 
+    _formatTitleCase(str) {
+        if (!str) return "";
+        const s = String(str).trim();
+        // Se uma música ou álbum vier todo em CAIXA ALTA do servidor (ex: "GREATEST HITS"),
+        // converte automaticamente para Primeira Letra Maiúscula ("Greatest Hits")!
+        if (s.length > 3 && s === s.toUpperCase() && /[A-ZÀ-Ú]/.test(s)) {
+            return s.toLowerCase().replace(/(?:^|\s|\(|\[|-)([a-zà-ú])/g, (m) => m.toUpperCase());
+        }
+        return s;
+    }
+
     /* ======================================================================
      * 3. CONTROLE DE HOVER INTELIGENTE
      * ====================================================================== */
@@ -483,7 +496,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 4. ANIMAÇÃO DE ROTAÇÃO (APENAS NO ÍCONE DA BARRA QUANDO É YOUTUBE MUSIC!)
+     * 4. ANIMAÇÃO DE ROTAÇÃO (APENAS NO ÍCONE DA BARRA)
      * ====================================================================== */
     _updateAnimationState() {
         if (this._isPlaying && this._hasActiveTrack) {
@@ -534,7 +547,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         if (!meta) return false;
 
         const lowerBus = (busName || "").toLowerCase();
-        // Se for um app dedicado exclusivo do YouTube Music (Pear Desktop / th-ch), é 100% YouTube Music
         if (lowerBus.includes("youtube-music") || lowerBus.includes("ytmusic") || lowerBus.includes("pear")) {
             return true;
         }
@@ -543,42 +555,32 @@ class YTMusicHybridApplet extends Applet.Applet {
         if (!title) return false;
 
         const album = meta["xesam:album"] ? String(meta["xesam:album"].deep_unpack() || "").trim() : "";
-        const artUrl = meta["mpris:artUrl"] ? String(meta["mpris:artUrl"].deep_unpack() || "").trim() : "";
         const xesamUrl = meta["xesam:url"] ? String(meta["xesam:url"].deep_unpack() || "").trim() : "";
 
-        // 1. Se o navegador informou a URL da aba via xesam:url:
         if (xesamUrl) {
             if (xesamUrl.includes("music.youtube.com")) return true;
             if (xesamUrl.includes("youtube.com") && !xesamUrl.includes("music.youtube.com")) {
-                return false; // É YouTube de vídeo normal! Ignorar!
+                return false;
             }
         }
 
-        // 2. Verifica se a janela do App PWA do YouTube Music está aberta (ou oculta no nosso tray)
         const pwaWin = this._findYTMusicMetaWindow();
         if (pwaWin) {
             const winTitle = (pwaWin.get_title() || "").trim();
-            // Quando o PWA do YouTube Music está tocando uma música, o título da janela dele é
-            // "<Nome da Música> - YouTube Music" ou "YouTube Music"
             if (winTitle.includes(title)) {
                 return true;
             }
         }
 
-        // 3. Diferença estrutural crítica no Chromium/Chrome MediaSession entre YouTube Music e YouTube Normal:
-        //    - No YouTube Music (music.youtube.com): SEMPRE preenche `xesam:album` com o nome do álbum/single!
-        //    - No YouTube Normal (www.youtube.com): `xesam:album` é SEMPRE VAZIO ("")!
         if (album.length > 0) {
             return true;
         }
 
-        // 4. Se `xesam:album` está vazio e a miniatura vem de `i.ytimg.com/vi/` (thumbnail 16:9 de vídeo do YouTube)
-        //    ou se não há álbum definido, é um vídeo do YouTube normal ou outra aba de vídeo do Chrome!
         return false;
     }
 
     /* ======================================================================
-     * 6. MODO SEGUNDO PLANO (CONTINUAR TOCANDO AO OCULTAR NA BARRA)
+     * 6. ABRIR / FOCAR / OCULTAR JANELA DO YOUTUBE MUSIC (100% CONFIÁVEL)
      * ====================================================================== */
     _initWindowInterceptor() {
         try {
@@ -614,112 +616,42 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     _updateWindowButtonLabel() {
-        const metaWin = this._findYTMusicMetaWindow();
-        if (metaWin && !metaWin.minimized && !this._hiddenInTrayMode) {
-            this._openAppBtn.set_label("🗕 Ocultar na Barra");
-        } else {
-            this._openAppBtn.set_label("↗ Mostrar YT Music");
-        }
+        this._openAppBtn.set_label("↗ Abrir player");
     }
 
-    _toggleOrLaunchYTMusicWindow() {
+    _openOrFocusYTMusicWindow() {
+        // 1. Se a janela já existir no gerenciador de janelas do Cinnamon, desminimiza e traz para frente!
         const metaWin = this._findYTMusicMetaWindow();
         const fifoPath = GLib.build_filenamev([GLib.get_user_runtime_dir() || "/tmp", "ytmusic-mint-window-cmd"]);
-
         if (metaWin) {
-            if (!metaWin.minimized && !this._hiddenInTrayMode) {
-                this._hiddenInTrayMode = true;
-                metaWin.minimize();
-                try {
-                    GLib.file_set_contents(fifoPath, "hide");
-                } catch (_) {}
-            } else {
-                this._hiddenInTrayMode = false;
-                try {
-                    GLib.file_set_contents(fifoPath, "show");
-                } catch (_) {}
-                metaWin.unminimize(global.get_current_time());
-                metaWin.activate(global.get_current_time());
-            }
-            this._updateWindowButtonLabel();
-            this._discoverPlayers();
-            return;
-        }
-
-        if (this._hiddenInTrayMode) {
             this._hiddenInTrayMode = false;
             try {
                 GLib.file_set_contents(fifoPath, "show");
             } catch (_) {}
-            this._updateWindowButtonLabel();
-            return;
+            try {
+                metaWin.unminimize(global.get_current_time());
+                metaWin.activate(global.get_current_time());
+            } catch (_) {}
         }
 
-        this._launchYTMusicApp();
-    }
-
-    _launchYTMusicApp() {
-        const custom = (this.ytmusicLaunchUrl || "auto").trim();
-        if (custom !== "auto" && custom !== "") {
-            if (custom.startsWith("http://") || custom.startsWith("https://")) {
-                Util.spawnCommandLine(`xdg-open "${custom}"`);
-            } else {
-                Util.spawnCommandLine(custom);
-            }
-            this._schedulePostLaunchDiscovery();
-            return;
-        }
-
-        try {
-            const apps = Gio.AppInfo.get_all();
-            const prefProfile = this.chromeProfile || "auto";
-            let candidates = [];
-
-            for (let i = 0; i < apps.length; i++) {
-                const app = apps[i];
-                const name = (app.get_name() || "").toLowerCase();
-                const disp = (app.get_display_name() || "").toLowerCase();
-                const id = (app.get_id() || "").toLowerCase();
-                const cmd = (app.get_commandline() || "");
-
-                if (
-                    name.includes("youtube music") ||
-                    disp.includes("youtube music") ||
-                    id.includes(YTM_CHROME_APP_ID) ||
-                    id.includes("youtube-music") ||
-                    id.includes("ytmusic") ||
-                    cmd.toLowerCase().includes(YTM_CHROME_APP_ID)
-                ) {
-                    let priority = 10;
-                    if (prefProfile !== "auto" && cmd.includes(prefProfile)) {
-                        priority = 100;
-                    } else if (cmd.includes("Profile 3")) {
-                        priority = 50;
-                    } else if (cmd.includes("Default")) {
-                        priority = 45;
-                    }
-                    candidates.push({ app, priority });
-                }
-            }
-
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => b.priority - a.priority);
-                candidates[0].app.launch([], null);
+        // 2. Executa sempre o script dedicado launch_ytmusic.sh que:
+        //    - Se a janela estiver oculta (unmapped via xdotool), faz windowmap + windowactivate
+        //    - Se a janela já estiver aberta, faz windowactivate
+        //    - Se o app estiver fechado, executa gtk-launch / /opt/google/chrome/google-chrome --app-id=cinhimbnkkaeohfgghhklpknlkffjgod
+        const launcherScript = GLib.build_filenamev([this.metadata.path, "launch_ytmusic.sh"]);
+        if (GLib.file_test(launcherScript, GLib.FileTest.EXISTS)) {
+            Util.spawn_async(["/bin/bash", launcherScript], () => {
                 this._schedulePostLaunchDiscovery();
-                return;
-            }
-        } catch (e) {
-            global.logError(`[ytmusic-player] Erro ao buscar Gio.AppInfo: ${e}`);
-        }
-
-        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
-            const prof = (this.chromeProfile && this.chromeProfile !== "auto") ? this.chromeProfile : "Default";
-            Util.spawnCommandLine(`/opt/google/chrome/google-chrome "--profile-directory=${prof}" --app-id=${YTM_CHROME_APP_ID}`);
-            this._schedulePostLaunchDiscovery();
+            });
             return;
         }
 
-        Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
+        // Fallback direto
+        if (GLib.file_test("/opt/google/chrome/google-chrome", GLib.FileTest.EXISTS)) {
+            Util.spawnCommandLine(`/opt/google/chrome/google-chrome --profile-directory=Default --app-id=${YTM_CHROME_APP_ID}`);
+        } else {
+            Util.spawnCommandLine(`xdg-open "https://music.youtube.com"`);
+        }
         this._schedulePostLaunchDiscovery();
     }
 
@@ -798,7 +730,6 @@ class YTMusicHybridApplet extends Applet.Applet {
             const busName = mprisNames[i];
             const lower = busName.toLowerCase();
 
-            // Ignora players que claramente não são YouTube Music nem Navegador (ex: VLC, Spotify, Rhythmbox)
             const isDedicatedYtm = (lower.includes("youtube-music") || lower.includes("ytmusic") || lower.includes("pear"));
             const isBrowser = (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox"));
 
@@ -823,8 +754,6 @@ class YTMusicHybridApplet extends Applet.Applet {
 
                 const isYtmTrack = this._isGenuineYTMusicMetadata(busName, meta);
 
-                // Se este processo do Chrome estiver tocando um vídeo do YouTube normal (não é YouTube Music),
-                // nós o IGNORAMOS completamente!
                 if (!isYtmTrack && !isDedicatedYtm) {
                     continue;
                 }
@@ -893,8 +822,8 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._isPlaying = false;
         this._hasActiveTrack = false;
         this._title = "YouTube Music";
-        this._artist = "Clique no ícone para abrir o YouTube Music";
-        this._album = "Exclusivo para YouTube Music";
+        this._artist = "Clique em Abrir player para iniciar";
+        this._album = "Player exclusivo do YouTube Music";
         this._durationUs = 0;
         this._positionUs = 0;
         const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
@@ -910,9 +839,6 @@ class YTMusicHybridApplet extends Applet.Applet {
         const metaVar = this._propsProxy.get_cached_property("Metadata");
         const meta = metaVar ? metaVar.deep_unpack() : null;
 
-        // Valida a cada mudança de faixa se o que está no Chrome é realmente YouTube Music!
-        // Se o usuário mudou o foco para um vídeo do YouTube normal no navegador, o Applet
-        // ignora o vídeo do YouTube normal e se recolhe para o estado exclusivo do YouTube Music!
         if (!this._isGenuineYTMusicMetadata(this._activeBusName, meta)) {
             this._resetToIdleState();
             return;
@@ -1093,7 +1019,7 @@ class YTMusicHybridApplet extends Applet.Applet {
     _sendMprisCommand(methodName) {
         this._discoverPlayers();
         if (!this._activeBusName || !this._hasActiveTrack) {
-            this._toggleOrLaunchYTMusicWindow();
+            this._openOrFocusYTMusicWindow();
             return;
         }
         try {
@@ -1199,9 +1125,9 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._panelPlayIcon.set_icon_name(iconName);
         this._popupPlayIcon.set_icon_name(iconName);
 
-        this._titleLabel.set_text(this._title);
-        this._artistLabel.set_text(this._artist);
-        this._albumLabel.set_text(this._album);
+        this._titleLabel.set_text(this._formatTitleCase(this._title));
+        this._artistLabel.set_text(this._formatTitleCase(this._artist));
+        this._albumLabel.set_text(this._formatTitleCase(this._album));
         this._volumeLabel.set_text(`🔊 ${Math.round((this._volume || 1) * 100)}%`);
 
         this._updateWindowButtonLabel();
