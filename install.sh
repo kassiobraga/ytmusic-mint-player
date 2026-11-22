@@ -28,7 +28,7 @@ for cfg in \
     "${HOME}/.var/app/io.github.pear_devs.pear_desktop/config/YouTube Music/config.json" \
     "${HOME}/.var/app/com.github.th_ch.youtube_music/config/YouTube Music/config.json"; do
     if [[ -f "$cfg" ]] && command -v python3 >/dev/null 2>&1; then
-        python3 - "$cfg" <<'PYCFG' || true
+        /usr/bin/python3 - "$cfg" <<'PYCFG' || true
 import json, sys
 path = sys.argv[1]
 try:
@@ -51,7 +51,7 @@ done
 
 # 3. Ativar automaticamente o Applet na Zona Esquerda (left) do painel principal
 if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PYEOF'
+    /usr/bin/python3 - <<'PYEOF'
 import ast, subprocess
 
 UUID = "ytmusic-player@antigravity"
@@ -93,7 +93,7 @@ fi
 echo "------------------------------------------------------------------"
 echo "🔍 [4/4] Diagnóstico de vinculação ao YouTube Music na sua máquina:"
 if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PYDIAG' || true
+    /usr/bin/python3 - <<'PYDIAG' || true
 import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib

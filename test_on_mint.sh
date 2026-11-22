@@ -10,7 +10,7 @@ echo "=================================================================="
 echo " 🧪 INICIANDO TESTE AUTOMATIZADO NO SEU LINUX MINT"
 echo "=================================================================="
 
-python3 - <<'PYTEST'
+/usr/bin/python3 - <<'PYTEST'
 import subprocess, time, os, sys
 import gi
 gi.require_version("Gio", "2.0")

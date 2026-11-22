@@ -8,7 +8,7 @@ echo "Removendo ${UUID}..."
 rm -rf "${APPLET_DEST}"
 
 if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PYEOF'
+    /usr/bin/python3 - <<'PYEOF'
 import ast, subprocess
 UUID = "ytmusic-player@antigravity"
 try:
