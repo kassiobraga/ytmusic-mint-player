@@ -1,8 +1,8 @@
 {
   "uuid": "ytmusic-player@antigravity",
-  "name": "YouTube Music Taskbar Player (Hybrid Vinyl)",
-  "description": "Player enxuto do YouTube Music para a barra do Linux Mint com ícone de vinil girando, controles rápidos (Voltar, Play/Pause, Avançar) e janelinha Hover estilo Dynamic Island com capa em vinil girando, glow adaptativo e barra de progresso.",
-  "version": "1.0.0",
+  "name": "YouTube Music Taskbar Player",
+  "description": "Player exclusivo do YouTube Music para a barra esquerda do Linux Mint (Cinnamon), integrado ao Pear Desktop com Close-to-Tray nativo, isolamento total do navegador Chrome, capa do álbum fixa e tipografia Sans-Serif.",
+  "version": "3.0.0",
   "max-instances": 1,
   "role": "panellauncher",
   "icon": "ytmusic-vinyl"

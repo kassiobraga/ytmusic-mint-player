@@ -2,7 +2,7 @@
   "icon-animation": {
     "type": "combobox",
     "default": "spin",
-    "description": "Animação do ícone do YouTube Music na barra quando estiver tocando",
+    "description": "Animação do ícone do YouTube Music na barra enquanto a música toca",
     "options": {
       "Girando como vinil (Recomendado)": "spin",
       "Fixo pulsando (Glow)": "pulse",
@@ -14,15 +14,15 @@
     "default": "when-no-track",
     "description": "Minimizar barrinha (mostrar apenas o ícone do YouTube Music)",
     "options": {
-      "Quando não houver música ativa (Minimiza fechado, expande ao tocar/pausar)": "when-no-track",
-      "Sempre que estiver pausado ou fechado (Só mostra botões tocando)": "when-not-playing",
+      "Quando não houver música ativa (Minimiza parado, expande ao tocar/pausar)": "when-no-track",
+      "Sempre que estiver pausado ou parado (Só mostra botões tocando)": "when-not-playing",
       "Sempre mostrar os botões Voltar / Play / Avançar": "never"
     }
   },
-  "preferred-account-email": {
-    "type": "entry",
-    "default": "cassio26@gmail",
-    "description": "E-mail (ou parte dele) da conta pessoal do YouTube Music Premium no Google Chrome"
+  "hide-from-center-taskbar": {
+    "type": "switch",
+    "default": true,
+    "description": "Ocultar o ícone duplicado do YouTube Music na barra central de janelas abertas"
   },
   "hover-delay-ms": {
     "type": "spinbutton",

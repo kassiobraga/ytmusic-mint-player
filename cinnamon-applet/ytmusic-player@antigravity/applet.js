@@ -1,25 +1,28 @@
 /* ==========================================================================
- * YouTube Music Taskbar Player (Hybrid v2.2) - Cinnamon Applet
+ * YouTube Music Taskbar Player v3.0 — Cinnamon Applet Nativo
  * UUID: ytmusic-player@antigravity
  *
- * Arquitetura v2.2 (Solução Definitiva):
- *  1. Zero Ícone Duplicado na Barra Central (`skip_taskbar` via X11):
- *     Assim que a janela EXATA do PWA (`crx_cinhimbnkkaeohfgghhklpknlkffjgod`)
- *     é aberta, marcamos somente ELA com `_NET_WM_STATE_SKIP_TASKBAR` via
- *     `wmctrl` (usando apenas o XID exato do `crx_cinhimbnkkaeohfgghhklpknlkffjgod`).
- *     Resultado: o ícone vermelho duplicado SOME da barra central de tarefas,
- *     deixando o YouTube Music integrado 100% apenas na nossa barrinha à esquerda!
- *  2. Lançamento 100% Confiável quando o App está Fechado:
- *     Usa `Gio.DesktopAppInfo` + `GLib.spawn_command_line_async` diretamente
- *     (sem `Util.spawn_async` que bloqueava em subshells), abrindo na hora o
- *     atalho `chrome-cinhimbnkkaeohfgghhklpknlkffjgod-Profile_3.desktop` (conta
- *     pessoal Cássio Braga com YouTube Premium).
- *  3. Toggle Mostrar / Ocultar em 2º Plano (Exclusivo da janela do PWA):
- *     - Se o PWA está fechado -> Abre o PWA na conta pessoal (`Profile 3`).
- *     - Se o PWA está aberto e focado -> Minimiza só o PWA (como ele tem
- *       `skip_taskbar`, some da tela e da barra central, continuando tocando!).
- *     - Se o PWA está minimizado/atrás -> Traz só o PWA para frente!
- *     - NUNCA busca por título e NUNCA toca na janela do Antigravity!
+ * Arquitetura v3.0 (Integrada ao Pear Desktop — pear-devs/pear-desktop):
+ *  1. Isolamento 100% Determinístico via MPRIS2 D-Bus:
+ *     - Escuta EXCLUSIVAMENTE `org.mpris.MediaPlayer2.YoutubeMusic*`.
+ *     - Nunca se conecta ao Google Chrome / Chromium (zero mistura com
+ *       vídeos do YouTube normal ou outras abas do navegador).
+ *  2. 100% Assíncrono (Zero bloqueio na Main Thread do Cinnamon):
+ *     - Proxies D-Bus criados com `Gio.DBusProxy.new_for_bus` assíncrono.
+ *     - Download de capas via `Gio.Subprocess` + `wait_check_async` (sem
+ *       shell injection e sem timeouts cegos).
+ *  3. Close-to-Tray Nativo + Reabertura Infalível (10/10 vezes):
+ *     - Clicar no "X" da janela do Pear Desktop oculta a janela (`hide()`)
+ *       mantendo a música tocando em segundo plano e sumindo da barra central.
+ *     - Clicar no ícone da barra ou em "Abrir player" chama `MPRIS Raise()` +
+ *       `metaWin.unminimize()` (0 argumentos!) + troca de workspace + `activate()`,
+ *       ou dispara `launch_ytmusic.sh` (Electron `second-instance`).
+ *     - Clicar com a janela já visível e focada aciona `metaWin.delete()` que,
+ *       com `options.tray: true`, oculta a janela mantendo a música tocando!
+ *  4. Padrão Visual do Usuário:
+ *     - Tipografia 100% Sans-Serif, primeira letra maiúscula ("YouTube Music"
+ *       sem corte), capa do álbum quadrada fixa + glow adaptativo e ícone de
+ *       vinil girando apenas na barra esquerda.
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
@@ -31,15 +34,21 @@ const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Clutter = imports.gi.Clutter;
 const GdkPixbuf = imports.gi.GdkPixbuf;
+const Meta = imports.gi.Meta;
 
 const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
 const DBUS_NAME = "org.freedesktop.DBus";
 const DBUS_PATH = "/org/freedesktop/DBus";
-const YTM_CHROME_APP_ID = "cinhimbnkkaeohfgghhklpknlkffjgod";
-const YTM_WM_CLASS = "crx_cinhimbnkkaeohfgghhklpknlkffjgod";
 
-class YTMusicHybridApplet extends Applet.Applet {
+// WM_CLASS exclusivo do Pear Desktop (th-ch/youtube-music)
+const PEAR_WM_CLASSES = [
+    "com.github.th-ch.youtube-music",
+    "youtube-music",
+    "pear-desktop"
+];
+
+class YTMusicV3Applet extends Applet.Applet {
     constructor(metadata, orientation, panelHeight, instanceId) {
         super(orientation, panelHeight, instanceId);
 
@@ -54,12 +63,14 @@ class YTMusicHybridApplet extends Applet.Applet {
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instanceId);
         this.settings.bind("icon-animation", "iconAnimation", () => this._updateAnimationState());
         this.settings.bind("collapse-when-idle", "collapseWhenIdle", () => this._updateBarCollapseState());
-        this.settings.bind("preferred-account-email", "preferredAccountEmail");
+        this.settings.bind("hide-from-center-taskbar", "hideFromCenterTaskbar", () => this._applySkipTaskbarToPear());
         this.settings.bind("hover-delay-ms", "hoverDelayMs");
         this.settings.bind("hover-close-grace-ms", "hoverCloseGraceMs");
 
         // Runtime State
+        this._destroyed = false;
         this._activeBusName = null;
+        this._bindingBusName = null;
         this._propsProxy = null;
         this._propsSignalId = 0;
         this._dbusSignalId = 0;
@@ -72,7 +83,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._trackId = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
         this._title = "YouTube Music";
         this._artist = "Clique em Abrir player para iniciar";
-        this._album = "Conta pessoal YouTube Music";
+        this._album = "Player exclusivo do YouTube Music";
         this._artUrl = "";
         this._cachedArtPath = null;
         this._durationUs = 0;
@@ -82,9 +93,10 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._spinAngle = 0;
         this._spinTimerId = 0;
         this._posTimerId = 0;
-        this._pollWatchdogId = 0;
         this._hoverOpenTimerId = 0;
         this._hoverCloseTimerId = 0;
+        this._oneShotTimers = new Set();
+
         this._pointerInPanel = false;
         this._pointerInPopup = false;
 
@@ -94,12 +106,25 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._buildPanelUI();
         this._buildHoverPopupUI();
         this._initDBus();
-        this._initTaskbarDeduplicator();
+        this._initWindowDeduplicator();
         this._updateBarCollapseState();
     }
 
+    _scheduleOnce(delayMs, callback) {
+        if (this._destroyed) return 0;
+        const id = Mainloop.timeout_add(delayMs, () => {
+            this._oneShotTimers.delete(id);
+            if (!this._destroyed) {
+                callback();
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+        this._oneShotTimers.add(id);
+        return id;
+    }
+
     /* ======================================================================
-     * 1. BARRA DE TAREFAS (ÍCONE DO YT MUSIC GIRANDO + 3 BOTÕES)
+     * 1. BARRA DE TAREFAS (ESQUERDA — ÍCONE GIRANDO + VOLTAR / PLAY / AVANÇAR)
      * ====================================================================== */
     _buildPanelUI() {
         this.actor.set_style_class_name("applet-box");
@@ -131,7 +156,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             can_focus: true,
             child: this._ytmIcon
         });
-        this._ytmIconBtn.connect("clicked", () => this._toggleOrLaunchYTMusicWindow());
+        this._ytmIconBtn.connect("clicked", () => this._toggleOrLaunchPearWindow(true));
 
         this._controlsBox = new St.BoxLayout({
             style_class: "ytm-panel-controls-box",
@@ -208,7 +233,7 @@ class YTMusicHybridApplet extends Applet.Applet {
 
         if (mode === "when-not-playing") {
             showControls = (this._isPlaying && this._hasActiveTrack);
-        } else if (mode === "when-no-track" || mode === "when-closed") {
+        } else if (mode === "when-no-track") {
             showControls = (this._hasActiveTrack && (this._isPlaying || this._playbackStatus === "Paused"));
         } else {
             showControls = true;
@@ -289,7 +314,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             style_class: "ytm-badge-text",
             text: "YouTube Music"
         });
-        this._badgeLabel.clutter_text.set_ellipsize(0);
+        this._badgeLabel.clutter_text.set_ellipsize(0); // Nunca cortar!
         this._badgePill.add_actor(this._badgeDot);
         this._badgePill.add_actor(this._badgeLabel);
         badgeRow.add_actor(this._badgePill);
@@ -335,6 +360,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             style_class: "ytm-progress-track",
             x_expand: true,
             reactive: true,
+            x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER
         });
         this._progressFill = new St.Widget({
@@ -370,8 +396,9 @@ class YTMusicHybridApplet extends Applet.Applet {
             label: "↗ Abrir player"
         });
         this._openAppBtn.connect("clicked", () => {
-            this.menu.close();
-            this._toggleOrLaunchYTMusicWindow();
+            this.menu.close(false);
+            // Aguarda 50ms para liberar o grab do PopupMenu antes de ocultar/abrir a janela
+            this._scheduleOnce(50, () => this._toggleOrLaunchPearWindow(true, true));
         });
 
         const ctrlsBox = new St.BoxLayout({
@@ -462,11 +489,10 @@ class YTMusicHybridApplet extends Applet.Applet {
             Mainloop.source_remove(this._hoverOpenTimerId);
             this._hoverOpenTimerId = 0;
         }
-        const delay = Math.max(0, this.hoverDelayMs || 80);
+        const delay = Math.max(0, this.hoverDelayMs ?? 80);
         this._hoverOpenTimerId = Mainloop.timeout_add(delay, () => {
             this._hoverOpenTimerId = 0;
             if (this._pointerInPanel && !this.menu.isOpen) {
-                this._discoverPlayers();
                 this._syncPositionNow();
                 this._updateWindowButtonLabel();
                 this.menu.open(true);
@@ -544,57 +570,42 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 5. ZERO DUPLICAÇÃO NA BARRA CENTRAL (`skip_taskbar` SOMENTE NO PWA!)
+     * 5. GESTÃO DE JANELA DO PEAR DESKTOP (REABERTURA INFALÍVEL + SKIP_TASKBAR)
      * ====================================================================== */
-    _initTaskbarDeduplicator() {
-        // Aplica skip_taskbar imediatamente caso o YouTube Music já esteja aberto
-        this._applySkipTaskbarToPwa();
-
-        // Escuta novas janelas criadas no Cinnamon: se for o PWA do YouTube Music,
-        // remove automaticamente o ícone duplicado da barra central!
+    _initWindowDeduplicator() {
+        this._applySkipTaskbarToPear();
         try {
             if (global.display) {
                 this._windowCreatedSignalId = global.display.connect("window-created", (display, metaWin) => {
-                    if (this._isStrictYTMusicMetaWindow(metaWin)) {
-                        Mainloop.timeout_add(300, () => {
-                            this._applySkipTaskbarToPwa();
-                            return GLib.SOURCE_REMOVE;
-                        });
+                    if (this._isPearMetaWindow(metaWin)) {
+                        this._scheduleOnce(250, () => this._applySkipTaskbarToPear());
+                        this._scheduleOnce(700, () => this._applySkipTaskbarToPear());
                     }
                 });
             }
         } catch (_) {}
     }
 
-    _applySkipTaskbarToPwa() {
-        // Executa wmctrl/xdotool EXCLUSIVAMENTE nos XIDs cuja classe é crx_cinhimbnkkaeohfgghhklpknlkffjgod
-        // Isso remove o ícone vermelho duplicado da barra central de tarefas sem afetar nenhuma outra janela!
-        try {
-            const cmd = `/bin/bash -c 'for id in $(xdotool search --classname "^${YTM_WM_CLASS}$" 2>/dev/null); do wmctrl -i -r "$id" -b add,skip_taskbar 2>/dev/null; done'`;
-            GLib.spawn_command_line_async(cmd);
-        } catch (_) {}
-    }
-
-    _isStrictYTMusicMetaWindow(metaWin) {
+    _isPearMetaWindow(metaWin) {
         if (!metaWin) return false;
-        const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
-        const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
-        return (
-            wmClass === YTM_WM_CLASS ||
-            wmInst === YTM_WM_CLASS ||
-            wmClass.includes(YTM_CHROME_APP_ID) ||
-            wmInst.includes(YTM_CHROME_APP_ID) ||
-            wmClass === "youtube-music" ||
-            wmClass === "pear-desktop"
-        );
+        try {
+            if (metaWin.get_window_type && metaWin.get_window_type() !== Meta.WindowType.NORMAL) {
+                return false;
+            }
+            const wmClass = (metaWin.get_wm_class() || "").toLowerCase();
+            const wmInst = (metaWin.get_wm_class_instance ? (metaWin.get_wm_class_instance() || "") : "").toLowerCase();
+            return PEAR_WM_CLASSES.some(c => wmClass === c || wmInst === c);
+        } catch (_) {
+            return false;
+        }
     }
 
-    _findStrictYTMusicPwaWindow() {
+    _findPearMetaWindow() {
         try {
             const windows = global.get_window_actors();
             for (let i = 0; i < windows.length; i++) {
                 const metaWin = windows[i].get_meta_window();
-                if (this._isStrictYTMusicMetaWindow(metaWin)) {
+                if (this._isPearMetaWindow(metaWin)) {
                     return metaWin;
                 }
             }
@@ -602,133 +613,149 @@ class YTMusicHybridApplet extends Applet.Applet {
         return null;
     }
 
+    _applySkipTaskbarToPear() {
+        const action = (this.hideFromCenterTaskbar === false) ? "remove" : "add";
+        try {
+            const pattern = PEAR_WM_CLASSES.map(c => c.replace(/\./g, "\\.")).join("|");
+            const cmd = `/bin/bash -c 'for id in $(xdotool search --class "^(${pattern})$" 2>/dev/null); do wmctrl -i -r "$id" -b ${action},skip_taskbar 2>/dev/null; done'`;
+            GLib.spawn_command_line_async(cmd);
+        } catch (_) {}
+    }
+
     _updateWindowButtonLabel() {
-        const metaWin = this._findStrictYTMusicPwaWindow();
+        const metaWin = this._findPearMetaWindow();
         if (metaWin && !metaWin.minimized) {
-            this._openAppBtn.set_label("🗕 Minimizar player");
+            this._openAppBtn.set_label("🗕 Ocultar na barra");
         } else {
             this._openAppBtn.set_label("↗ Abrir player");
         }
     }
 
-    _toggleOrLaunchYTMusicWindow() {
-        // 1. Se a janela EXATA do PWA do YouTube Music já estiver aberta:
-        const metaWin = this._findStrictYTMusicPwaWindow();
-        if (metaWin) {
-            this._applySkipTaskbarToPwa();
-            try {
-                if (!metaWin.minimized && metaWin.has_focus()) {
-                    // Minimiza a janela: como tem skip_taskbar, some da tela e da barra central,
-                    // mas continua tocando música perfeitamente na nossa barrinha!
-                    metaWin.minimize();
-                } else {
-                    metaWin.unminimize(global.get_current_time());
-                    metaWin.activate(global.get_current_time());
-                }
-            } catch (_) {}
-            this._updateWindowButtonLabel();
-            this._discoverPlayers();
-            return;
-        }
-
-        // 2. Se o YouTube Music está FECHADO: abre diretamente via GLib/Gio (100% garantido!)
-        this._launchYTMusicPwaDirect();
-    }
-
-    _launchYTMusicPwaDirect() {
-        // Tentativa 1: Gio.DesktopAppInfo direto no atalho da conta pessoal (Profile 3)
-        const desktopCandidates = [
-            `chrome-${YTM_CHROME_APP_ID}-Profile_3.desktop`,
-            `chrome-${YTM_CHROME_APP_ID}-Default.desktop`
-        ];
-        for (let i = 0; i < desktopCandidates.length; i++) {
-            try {
-                const appInfo = Gio.DesktopAppInfo.new(desktopCandidates[i]);
-                if (appInfo) {
-                    appInfo.launch([], null);
-                    this._schedulePostLaunchTasks();
-                    return;
-                }
-            } catch (_) {}
-        }
-
-        // Tentativa 2: GLib.spawn_command_line_async direto no script launch_ytmusic.sh
+    _launchPearBinary() {
         const launcherScript = GLib.build_filenamev([this.metadata.path, "launch_ytmusic.sh"]);
-        const preferredEmail = (this.preferredAccountEmail || "cassio26@gmail").trim();
         try {
             if (GLib.file_test(launcherScript, GLib.FileTest.EXISTS)) {
-                GLib.spawn_command_line_async(`/bin/bash "${launcherScript}" "${preferredEmail}"`);
-                this._schedulePostLaunchTasks();
-                return;
+                GLib.spawn_command_line_async(`/bin/bash "${launcherScript}"`);
+            } else if (GLib.file_test("/opt/YouTube Music/youtube-music", GLib.FileTest.EXISTS)) {
+                GLib.spawn_command_line_async(`"/opt/YouTube Music/youtube-music"`);
             }
         } catch (e) {
-            global.logError(`[ytmusic-player] Erro ao chamar launch_ytmusic.sh: ${e}`);
+            global.logError(`[ytmusic-player] Erro ao abrir Pear Desktop: ${e}`);
         }
 
-        // Tentativa 3: Comando direto do Google Chrome PWA no Profile 3
-        try {
-            GLib.spawn_command_line_async(
-                `/opt/google/chrome/google-chrome "--profile-directory=Profile 3" --app-id=${YTM_CHROME_APP_ID}`
-            );
-        } catch (e) {
-            global.logError(`[ytmusic-player] Erro no fallback Chrome: ${e}`);
-        }
-        this._schedulePostLaunchTasks();
-    }
-
-    _schedulePostLaunchTasks() {
-        [600, 1400, 2500, 4000].forEach(delay => {
-            Mainloop.timeout_add(delay, () => {
-                this._applySkipTaskbarToPwa();
-                this._discoverPlayers();
+        [600, 1500, 2800].forEach(delay => {
+            this._scheduleOnce(delay, () => {
+                this._applySkipTaskbarToPear();
+                this._discoverPearPlayer();
                 this._updateWindowButtonLabel();
-                return GLib.SOURCE_REMOVE;
             });
         });
     }
 
-    /* ======================================================================
-     * 6. DETECÇÃO ESTRITA DE YOUTUBE MUSIC (REJEITA YOUTUBE NORMAL!)
-     * ====================================================================== */
-    _isGenuineYTMusicMetadata(busName, meta) {
-        if (!meta) return false;
+    _toggleOrLaunchPearWindow(allowToggleHide, forceHideWhenVisible = false) {
+        const metaWin = this._findPearMetaWindow();
+        const now = global.get_current_time();
 
-        const lowerBus = (busName || "").toLowerCase();
-        if (lowerBus.includes("youtube-music") || lowerBus.includes("ytmusic") || lowerBus.includes("pear")) {
-            return true;
-        }
-
-        const title = meta["xesam:title"] ? String(meta["xesam:title"].deep_unpack() || "").trim() : "";
-        if (!title) return false;
-
-        const album = meta["xesam:album"] ? String(meta["xesam:album"].deep_unpack() || "").trim() : "";
-        const xesamUrl = meta["xesam:url"] ? String(meta["xesam:url"].deep_unpack() || "").trim() : "";
-
-        if (xesamUrl) {
-            if (xesamUrl.includes("music.youtube.com")) return true;
-            if (xesamUrl.includes("youtube.com") && !xesamUrl.includes("music.youtube.com")) {
-                return false;
+        // 1. Se a janela do Pear Desktop está aberta e visível:
+        if (metaWin && !metaWin.minimized) {
+            if (allowToggleHide && (forceHideWhenVisible || metaWin.has_focus())) {
+                // Com options.tray=true no Pear Desktop, metaWin.delete(now) aciona
+                // Close-to-Tray nativo (mainWindow.hide()), mantendo a música tocando
+                // e removendo a janela da tela e da barra central!
+                try {
+                    metaWin.delete(now);
+                } catch (_) {
+                    metaWin.minimize();
+                }
+                this._scheduleOnce(150, () => this._updateWindowButtonLabel());
+                return;
             }
+            // Se está aberta atrás de outra janela ou em outro workspace, traz para frente!
+            try {
+                const ws = metaWin.get_workspace();
+                if (ws) ws.activate(now);
+                metaWin.activate(now);
+            } catch (_) {}
+            this._scheduleOnce(200, () => this._applySkipTaskbarToPear());
+            this._updateWindowButtonLabel();
+            return;
         }
 
-        const pwaWin = this._findStrictYTMusicPwaWindow();
-        if (pwaWin) {
-            const winTitle = (pwaWin.get_title() || "").trim();
-            if (winTitle.includes(title)) {
-                return true;
-            }
+        // 2. Se a janela existe mas está minimizada:
+        if (metaWin && metaWin.minimized) {
+            try {
+                const ws = metaWin.get_workspace();
+                if (ws) ws.activate(now);
+                // No Muffin/Cinnamon unminimize() aceita 0 argumentos!
+                metaWin.unminimize();
+                metaWin.activate(now);
+            } catch (_) {}
+            this._scheduleOnce(200, () => this._applySkipTaskbarToPear());
+            this._updateWindowButtonLabel();
+            return;
         }
 
-        if (album.length > 0) {
-            return true;
+        // 3. Se o Pear Desktop está rodando oculto no tray (bus MPRIS ativo, sem janela mapeada):
+        //    Chama org.mpris.MediaPlayer2.Raise() via D-Bus, com fallback automático para _launchPearBinary()!
+        if (this._activeBusName) {
+            try {
+                Gio.DBus.session.call(
+                    this._activeBusName,
+                    MPRIS_PATH,
+                    "org.mpris.MediaPlayer2",
+                    "Raise",
+                    null,
+                    null,
+                    Gio.DBusCallFlags.NONE,
+                    1000,
+                    null,
+                    (conn, res) => {
+                        if (this._destroyed) return;
+                        try {
+                            conn.call_finish(res);
+                        } catch (_) {
+                            this._launchPearBinary();
+                            return;
+                        }
+                        this._scheduleOnce(250, () => {
+                            const w = this._findPearMetaWindow();
+                            if (!w) {
+                                // Raise() não reexibiu a janela -> aciona fallback Electron second-instance
+                                this._launchPearBinary();
+                                return;
+                            }
+                            this._applySkipTaskbarToPear();
+                            try {
+                                w.unminimize();
+                                w.activate(global.get_current_time());
+                            } catch (_) {}
+                            this._updateWindowButtonLabel();
+                        });
+                    }
+                );
+                return;
+            } catch (_) {}
         }
 
-        return false;
+        // 4. Se o Pear Desktop está fechado: lança o binário oficial
+        this._launchPearBinary();
     }
 
     /* ======================================================================
-     * 7. INTEGRAÇÃO D-BUS MPRIS2 (SOMENTE YOUTUBE MUSIC!)
+     * 6. INTEGRAÇÃO D-BUS MPRIS2 — EXCLUSIVA DO PEAR DESKTOP (100% ASSÍNCRONA)
      * ====================================================================== */
+    _isPearMprisBus(busName) {
+        if (!busName || !busName.startsWith(MPRIS_PREFIX)) return false;
+        const suffix = busName.slice(MPRIS_PREFIX.length).toLowerCase();
+        // Aceita EXCLUSIVAMENTE o barramento dedicado do Pear Desktop / YouTube Music
+        // Rejeita 100% Chrome, Chromium, Brave, Firefox, VLC, Spotify, etc.
+        return (
+            suffix.startsWith("youtubemusic") ||
+            suffix.startsWith("youtube-music") ||
+            suffix.startsWith("pear")
+        );
+    }
+
     _initDBus() {
         try {
             this._dbusSignalId = Gio.DBus.session.signal_subscribe(
@@ -740,23 +767,19 @@ class YTMusicHybridApplet extends Applet.Applet {
                 Gio.DBusSignalFlags.NONE,
                 (conn, sender, path, iface, signal, params) => {
                     const [name] = params.deep_unpack();
-                    if (name && name.startsWith(MPRIS_PREFIX)) {
-                        this._discoverPlayers();
+                    if (this._isPearMprisBus(name)) {
+                        this._discoverPearPlayer();
                     }
                 }
             );
-            this._discoverPlayers();
-
-            this._pollWatchdogId = Mainloop.timeout_add(1500, () => {
-                this._discoverPlayers();
-                return GLib.SOURCE_CONTINUE;
-            });
+            this._discoverPearPlayer();
         } catch (e) {
             global.logError(`[ytmusic-player] Falha _initDBus: ${e}`);
         }
     }
 
-    _discoverPlayers() {
+    _discoverPearPlayer() {
+        if (this._destroyed) return;
         try {
             Gio.DBus.session.call(
                 DBUS_NAME,
@@ -769,79 +792,29 @@ class YTMusicHybridApplet extends Applet.Applet {
                 1000,
                 null,
                 (conn, res) => {
+                    if (this._destroyed) return;
                     try {
                         const reply = conn.call_finish(res);
                         const [names] = reply.deep_unpack();
-                        const mprisNames = (names || []).filter(n => n.startsWith(MPRIS_PREFIX));
-                        if (mprisNames.length === 0) {
-                            this._bindToPlayer(null);
+                        const pearBuses = (names || []).filter(n => this._isPearMprisBus(n));
+                        if (pearBuses.length === 0) {
+                            this._bindToPlayerAsync(null);
                             return;
                         }
-                        this._selectBestPlayer(mprisNames);
+                        this._bindToPlayerAsync(pearBuses[0]);
                     } catch (_) {}
                 }
             );
         } catch (_) {}
     }
 
-    _selectBestPlayer(mprisNames) {
-        let bestBus = null;
-        let bestScore = -1;
-
-        for (let i = 0; i < mprisNames.length; i++) {
-            const busName = mprisNames[i];
-            const lower = busName.toLowerCase();
-
-            const isDedicatedYtm = (lower.includes("youtube-music") || lower.includes("ytmusic") || lower.includes("pear"));
-            const isBrowser = (lower.includes("chromium") || lower.includes("chrome") || lower.includes("brave") || lower.includes("firefox"));
-
-            if (!isDedicatedYtm && !isBrowser) {
-                continue;
-            }
-
-            try {
-                const p = Gio.DBusProxy.new_for_bus_sync(
-                    Gio.BusType.SESSION,
-                    Gio.DBusProxyFlags.NONE,
-                    null,
-                    busName,
-                    MPRIS_PATH,
-                    "org.mpris.MediaPlayer2.Player",
-                    null
-                );
-                const stVar = p.get_cached_property("PlaybackStatus");
-                const st = stVar ? stVar.deep_unpack() : "Stopped";
-                const metaVar = p.get_cached_property("Metadata");
-                const meta = metaVar ? metaVar.deep_unpack() : null;
-
-                const isYtmTrack = this._isGenuineYTMusicMetadata(busName, meta);
-
-                if (!isYtmTrack && !isDedicatedYtm) {
-                    continue;
-                }
-
-                let score = isDedicatedYtm ? 100 : 80;
-                if (isYtmTrack) score += 100;
-                if (st === "Playing") score += 150;
-                else if (st === "Paused") score += 60;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestBus = busName;
-                }
-            } catch (_) {}
+    _bindToPlayerAsync(busName) {
+        if (this._activeBusName === busName && this._bindingBusName === null) {
+            if (this._propsProxy) this._readPlayerProperties();
+            else if (!busName) this._resetToIdleState();
+            return;
         }
-
-        this._bindToPlayer(bestBus);
-    }
-
-    _bindToPlayer(busName) {
-        if (this._activeBusName === busName) {
-            if (this._propsProxy) {
-                this._readPlayerProperties();
-            } else if (!busName) {
-                this._resetToIdleState();
-            }
+        if (busName !== null && this._bindingBusName === busName) {
             return;
         }
 
@@ -850,33 +823,40 @@ class YTMusicHybridApplet extends Applet.Applet {
             this._propsSignalId = 0;
         }
 
-        this._activeBusName = busName;
         this._propsProxy = null;
+        this._activeBusName = null;
+        this._bindingBusName = busName;
 
         if (!busName) {
             this._resetToIdleState();
             return;
         }
 
-        try {
-            this._propsProxy = Gio.DBusProxy.new_for_bus_sync(
-                Gio.BusType.SESSION,
-                Gio.DBusProxyFlags.NONE,
-                null,
-                busName,
-                MPRIS_PATH,
-                "org.mpris.MediaPlayer2.Player",
-                null
-            );
-
-            this._propsSignalId = this._propsProxy.connect("g-properties-changed", () => {
-                this._readPlayerProperties();
-            });
-
-            this._readPlayerProperties();
-        } catch (e) {
-            global.logError(`[ytmusic-player] Erro ao conectar player ${busName}: ${e}`);
-        }
+        Gio.DBusProxy.new_for_bus(
+            Gio.BusType.SESSION,
+            Gio.DBusProxyFlags.NONE,
+            null,
+            busName,
+            MPRIS_PATH,
+            "org.mpris.MediaPlayer2.Player",
+            null,
+            (source, res) => {
+                if (this._destroyed || this._bindingBusName !== busName) return;
+                try {
+                    const proxy = Gio.DBusProxy.new_for_bus_finish(res);
+                    this._activeBusName = busName;
+                    this._bindingBusName = null;
+                    this._propsProxy = proxy;
+                    this._propsSignalId = this._propsProxy.connect("g-properties-changed", () => {
+                        this._readPlayerProperties();
+                    });
+                    this._readPlayerProperties();
+                } catch (e) {
+                    this._bindingBusName = null;
+                    global.logError(`[ytmusic-player] Erro ao conectar proxy assíncrono ${busName}: ${e}`);
+                }
+            }
+        );
     }
 
     _resetToIdleState() {
@@ -885,26 +865,27 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._hasActiveTrack = false;
         this._title = "YouTube Music";
         this._artist = "Clique em Abrir player para iniciar";
-        this._album = "Conta pessoal YouTube Music";
+        this._album = "Player exclusivo do YouTube Music";
+        this._artUrl = "";
+        this._cachedArtPath = null;
         this._durationUs = 0;
         this._positionUs = 0;
+
+        // Restaura a capa padrão e limpa o glow inline da faixa anterior
         const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
         this._albumCoverBin.set_style(
             `border-radius: 12px; background-image: url("file://${defaultIconPath}"); background-size: cover; background-position: center;`
         );
+        this._popupCard.set_style(null);
+        this._progressFill.set_style(null);
+        this._popupPlayBtn.set_style(null);
+        this._badgePill.set_style(null);
+
         this._refreshAllUI();
     }
 
     _readPlayerProperties() {
-        if (!this._propsProxy) return;
-
-        const metaVar = this._propsProxy.get_cached_property("Metadata");
-        const meta = metaVar ? metaVar.deep_unpack() : null;
-
-        if (!this._isGenuineYTMusicMetadata(this._activeBusName, meta)) {
-            this._resetToIdleState();
-            return;
-        }
+        if (!this._propsProxy || this._destroyed) return;
 
         const statusVar = this._propsProxy.get_cached_property("PlaybackStatus");
         if (statusVar) {
@@ -922,12 +903,16 @@ class YTMusicHybridApplet extends Applet.Applet {
             this._positionUs = Number(posVar.deep_unpack());
         }
 
-        if (meta) {
+        let gotTitle = "";
+        const metaVar = this._propsProxy.get_cached_property("Metadata");
+        if (metaVar) {
+            const meta = metaVar.deep_unpack();
+
             if (meta["mpris:trackid"]) {
                 this._trackId = String(meta["mpris:trackid"].deep_unpack());
             }
             if (meta["xesam:title"]) {
-                const gotTitle = String(meta["xesam:title"].deep_unpack() || "").trim();
+                gotTitle = String(meta["xesam:title"].deep_unpack() || "").trim();
                 if (gotTitle.length > 0) {
                     this._title = gotTitle;
                     this._hasActiveTrack = true;
@@ -942,9 +927,7 @@ class YTMusicHybridApplet extends Applet.Applet {
             }
             if (meta["xesam:album"]) {
                 const alb = String(meta["xesam:album"].deep_unpack() || "").trim();
-                if (alb.length > 0) {
-                    this._album = alb;
-                }
+                this._album = alb.length > 0 ? alb : "YouTube Music";
             }
             if (meta["mpris:length"]) {
                 this._durationUs = Number(meta["mpris:length"].deep_unpack());
@@ -958,8 +941,13 @@ class YTMusicHybridApplet extends Applet.Applet {
             }
             if (newArtUrl && newArtUrl !== this._artUrl) {
                 this._artUrl = newArtUrl;
-                this._updateCoverArt(newArtUrl);
+                this._updateCoverArtAsync(newArtUrl);
             }
+        }
+
+        if (this._playbackStatus === "Stopped" && !gotTitle) {
+            this._resetToIdleState();
+            return;
         }
 
         this._refreshAllUI();
@@ -979,6 +967,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 500,
                 null,
                 (conn, res) => {
+                    if (this._destroyed) return;
                     try {
                         const reply = conn.call_finish(res);
                         const inner = reply.deep_unpack()[0];
@@ -991,18 +980,21 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 8. CAPA DO ÁLBUM ESTÁTICA (QUADRADA) & EXTRAÇÃO DE GLOW DINÂMICO
+     * 7. CAPA DO ÁLBUM ASSÍNCRONA SEGURA (GIO.SUBPROCESS) + GLOW DINÂMICO
      * ====================================================================== */
-    _updateCoverArt(artUrl) {
+    _updateCoverArtAsync(artUrl) {
         if (artUrl.startsWith("file://")) {
-            const localPath = GLib.filename_from_uri(artUrl)[0];
-            this._applyLocalCoverFile(localPath);
+            try {
+                const localPath = GLib.filename_from_uri(artUrl)[0];
+                this._applyLocalCoverFile(localPath);
+            } catch (_) {}
             return;
         }
 
         if (artUrl.startsWith("http://") || artUrl.startsWith("https://")) {
             const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, artUrl, -1);
             const targetPath = GLib.build_filenamev([this._cacheDir, `cover_${hash}.jpg`]);
+            const tmpPath = `${targetPath}.part`;
 
             if (GLib.file_test(targetPath, GLib.FileTest.EXISTS)) {
                 this._applyLocalCoverFile(targetPath);
@@ -1010,12 +1002,23 @@ class YTMusicHybridApplet extends Applet.Applet {
             }
 
             try {
-                GLib.spawn_command_line_async(`curl -sL --max-time 8 -o "${targetPath}" "${artUrl}"`);
-                Mainloop.timeout_add(900, () => {
-                    if (GLib.file_test(targetPath, GLib.FileTest.EXISTS)) {
-                        this._applyLocalCoverFile(targetPath);
-                    }
-                    return GLib.SOURCE_REMOVE;
+                const proc = Gio.Subprocess.new(
+                    ["curl", "-fsSL", "--max-time", "10", "-o", tmpPath, artUrl],
+                    Gio.SubprocessFlags.NONE
+                );
+                proc.wait_check_async(null, (p, res) => {
+                    if (this._destroyed) return;
+                    try {
+                        if (p.wait_check_finish(res) && GLib.file_test(tmpPath, GLib.FileTest.EXISTS)) {
+                            const src = Gio.File.new_for_path(tmpPath);
+                            const dst = Gio.File.new_for_path(targetPath);
+                            src.move(dst, Gio.FileCopyFlags.OVERWRITE, null, null);
+                            // Garante que a faixa ainda é a mesma antes de aplicar a capa
+                            if (this._artUrl === artUrl) {
+                                this._applyLocalCoverFile(targetPath);
+                            }
+                        }
+                    } catch (_) {}
                 });
             } catch (_) {}
         }
@@ -1080,12 +1083,11 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     /* ======================================================================
-     * 9. COMANDOS DE MÍDIA (PLAY, PAUSE, NEXT, PREV, SEEK, VOLUME)
+     * 8. COMANDOS DE MÍDIA (PLAY, PAUSE, NEXT, PREV, SEEK, VOLUME REAL)
      * ====================================================================== */
     _sendMprisCommand(methodName) {
-        this._discoverPlayers();
-        if (!this._activeBusName || !this._hasActiveTrack) {
-            this._toggleOrLaunchYTMusicWindow();
+        if (!this._activeBusName) {
+            this._toggleOrLaunchPearWindow(false);
             return;
         }
         try {
@@ -1097,13 +1099,10 @@ class YTMusicHybridApplet extends Applet.Applet {
                 null,
                 null,
                 Gio.DBusCallFlags.NONE,
-                -1,
+                1000,
                 null,
                 () => {
-                    Mainloop.timeout_add(150, () => {
-                        this._readPlayerProperties();
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    this._scheduleOnce(150, () => this._readPlayerProperties());
                 }
             );
         } catch (e) {
@@ -1132,7 +1131,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 new GLib.Variant("(ox)", [this._trackId || "/org/mpris/MediaPlayer2/TrackList/NoTrack", targetUs]),
                 null,
                 Gio.DBusCallFlags.NONE,
-                -1,
+                1000,
                 null,
                 null
             );
@@ -1163,7 +1162,7 @@ class YTMusicHybridApplet extends Applet.Applet {
                 ]),
                 null,
                 Gio.DBusCallFlags.NONE,
-                -1,
+                1000,
                 null,
                 null
             );
@@ -1194,7 +1193,7 @@ class YTMusicHybridApplet extends Applet.Applet {
         this._titleLabel.set_text(this._formatTitleCase(this._title));
         this._artistLabel.set_text(this._formatTitleCase(this._artist));
         this._albumLabel.set_text(this._formatTitleCase(this._album));
-        this._volumeLabel.set_text(`🔊 ${Math.round((this._volume || 1) * 100)}%`);
+        this._volumeLabel.set_text(`🔊 ${Math.round((this._volume ?? 1) * 100)}%`);
 
         this._updateWindowButtonLabel();
         this._updateBarCollapseState();
@@ -1203,11 +1202,16 @@ class YTMusicHybridApplet extends Applet.Applet {
     }
 
     on_applet_removed_from_panel() {
+        this._destroyed = true;
         if (this._spinTimerId) Mainloop.source_remove(this._spinTimerId);
         if (this._posTimerId) Mainloop.source_remove(this._posTimerId);
-        if (this._pollWatchdogId) Mainloop.source_remove(this._pollWatchdogId);
         if (this._hoverOpenTimerId) Mainloop.source_remove(this._hoverOpenTimerId);
         if (this._hoverCloseTimerId) Mainloop.source_remove(this._hoverCloseTimerId);
+        for (const tid of this._oneShotTimers) {
+            try { Mainloop.source_remove(tid); } catch (_) {}
+        }
+        this._oneShotTimers.clear();
+
         if (this._dbusSignalId) Gio.DBus.session.signal_unsubscribe(this._dbusSignalId);
         if (this._windowCreatedSignalId && global.display) {
             global.display.disconnect(this._windowCreatedSignalId);
@@ -1215,10 +1219,13 @@ class YTMusicHybridApplet extends Applet.Applet {
         if (this._propsProxy && this._propsSignalId) {
             this._propsProxy.disconnect(this._propsSignalId);
         }
+        if (this.menu) {
+            this.menu.destroy();
+        }
         this.settings.finalize();
     }
 }
 
 function main(metadata, orientation, panelHeight, instanceId) {
-    return new YTMusicHybridApplet(metadata, orientation, panelHeight, instanceId);
+    return new YTMusicV3Applet(metadata, orientation, panelHeight, instanceId);
 }
