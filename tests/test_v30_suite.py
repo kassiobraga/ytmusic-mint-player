@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 
-BASE = "/home/antigravity/ytmusic-mint-player"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APPLET_DIR = os.path.join(BASE, "cinnamon-applet", "ytmusic-player@antigravity")
 APPLET_JS = os.path.join(APPLET_DIR, "applet.js")
 STYLE_CSS = os.path.join(APPLET_DIR, "stylesheet.css")
@@ -234,7 +234,7 @@ def test_4_typography_title_case_and_syntax():
     js = open(APPLET_JS, encoding="utf-8").read()
     assert '"YOUTUBE MUSIC"' not in js
     assert 'text: "YouTube Music"' in js
-    assert "set_ellipsize(0)" in js
+    assert "set_ellipsize(Pango.EllipsizeMode.NONE)" in js or "set_ellipsize(0)" in js
 
     subprocess.check_call(["node", "--check", APPLET_JS])
     subprocess.check_call(["bash", "-n", LAUNCH_SH])

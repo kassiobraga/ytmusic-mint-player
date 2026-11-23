@@ -11,7 +11,11 @@ set -euo pipefail
 
 # 1. Binário oficial instalado pelo pacote .deb do pear-devs/pear-desktop
 if [[ -x "/opt/YouTube Music/youtube-music" ]]; then
-    nohup "/opt/YouTube Music/youtube-music" >/dev/null 2>&1 &
+    if command -v setsid >/dev/null 2>&1; then
+        setsid -f "/opt/YouTube Music/youtube-music" </dev/null >/dev/null 2>&1
+    else
+        nohup "/opt/YouTube Music/youtube-music" </dev/null >/dev/null 2>&1 &
+    fi
     exit 0
 fi
 

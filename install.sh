@@ -82,6 +82,7 @@ options = data["options"]
 options["tray"] = True
 options["appVisible"] = True
 options["resumeOnStart"] = True
+options["overrideUserAgent"] = True
 
 if not isinstance(data.get("plugins"), dict):
     data["plugins"] = {}

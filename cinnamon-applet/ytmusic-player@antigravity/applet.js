@@ -35,6 +35,7 @@ const GLib = imports.gi.GLib;
 const Clutter = imports.gi.Clutter;
 const GdkPixbuf = imports.gi.GdkPixbuf;
 const Meta = imports.gi.Meta;
+const Pango = imports.gi.Pango;
 
 const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
@@ -73,8 +74,10 @@ class YTMusicV3Applet extends Applet.Applet {
         this._bindingBusName = null;
         this._propsProxy = null;
         this._propsSignalId = 0;
+        this._playerSignalId = 0;
         this._dbusSignalId = 0;
         this._windowCreatedSignalId = 0;
+        this._windowMapSignalId = 0;
 
         this._playbackStatus = "Stopped";
         this._isPlaying = false;
@@ -89,6 +92,8 @@ class YTMusicV3Applet extends Applet.Applet {
         this._durationUs = 0;
         this._positionUs = 0;
         this._volume = 1.0;
+        this._lastVolSetAt = 0;
+        this._lastMprisPosUs = null;
 
         this._spinAngle = 0;
         this._spinTimerId = 0;
@@ -266,6 +271,10 @@ class YTMusicV3Applet extends Applet.Applet {
             this._pointerInPopup = false;
             this._scheduleHoverClose();
         });
+        this.menu.actor.connect("scroll-event", (actor, event) => {
+            this._onScrollVolume(event);
+            return Clutter.EVENT_STOP;
+        });
 
         this._popupCard = new St.BoxLayout({
             style_class: "ytm-popup-card",
@@ -280,13 +289,14 @@ class YTMusicV3Applet extends Applet.Applet {
         });
 
         const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
+        const defaultIconUri = GLib.filename_to_uri(defaultIconPath, null);
         this._albumCoverBin = new St.Bin({
             style_class: "ytm-album-cover-wrapper",
             width: 72,
             height: 72,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
-            style: `border-radius: 12px; background-image: url("file://${defaultIconPath}"); background-size: cover; background-position: center;`
+            style: `border-radius: 12px; background-image: url("${defaultIconUri}"); background-size: 72px 72px;`
         });
 
         const metaCol = new St.BoxLayout({
@@ -314,7 +324,7 @@ class YTMusicV3Applet extends Applet.Applet {
             style_class: "ytm-badge-text",
             text: "YouTube Music"
         });
-        this._badgeLabel.clutter_text.set_ellipsize(0); // Nunca cortar!
+        this._badgeLabel.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE); // Nunca cortar!
         this._badgePill.add_actor(this._badgeDot);
         this._badgePill.add_actor(this._badgeLabel);
         badgeRow.add_actor(this._badgePill);
@@ -323,19 +333,19 @@ class YTMusicV3Applet extends Applet.Applet {
             style_class: "ytm-track-title",
             text: this._formatTitleCase(this._title)
         });
-        this._titleLabel.clutter_text.set_ellipsize(3);
+        this._titleLabel.clutter_text.set_ellipsize(Pango.EllipsizeMode.END);
 
         this._artistLabel = new St.Label({
             style_class: "ytm-track-artist",
             text: this._formatTitleCase(this._artist)
         });
-        this._artistLabel.clutter_text.set_ellipsize(3);
+        this._artistLabel.clutter_text.set_ellipsize(Pango.EllipsizeMode.END);
 
         this._albumLabel = new St.Label({
             style_class: "ytm-track-album",
             text: this._formatTitleCase(this._album)
         });
-        this._albumLabel.clutter_text.set_ellipsize(3);
+        this._albumLabel.clutter_text.set_ellipsize(Pango.EllipsizeMode.END);
 
         metaCol.add_actor(badgeRow);
         metaCol.add_actor(this._titleLabel);
@@ -356,19 +366,21 @@ class YTMusicV3Applet extends Applet.Applet {
             text: "0:00"
         });
 
-        this._progressTrack = new St.Button({
+        this._progressTrack = new St.BoxLayout({
             style_class: "ytm-progress-track",
             x_expand: true,
             reactive: true,
-            x_align: Clutter.ActorAlign.START,
+            vertical: false,
             y_align: Clutter.ActorAlign.CENTER
         });
         this._progressFill = new St.Widget({
             style_class: "ytm-progress-fill",
             width: 0,
-            height: 6
+            height: 6,
+            x_expand: false,
+            x_align: Clutter.ActorAlign.START
         });
-        this._progressTrack.set_child(this._progressFill);
+        this._progressTrack.add_actor(this._progressFill);
         this._progressTrack.connect("button-press-event", (actor, event) => {
             this._onSeekClick(actor, event);
             return Clutter.EVENT_STOP;
@@ -473,10 +485,13 @@ class YTMusicV3Applet extends Applet.Applet {
     _formatTitleCase(str) {
         if (!str) return "";
         const s = String(str).trim();
-        if (s.length > 3 && s === s.toUpperCase() && /[A-ZÀ-Ú]/.test(s)) {
+        if (!s) return "";
+        // Converte apenas CAIXA ALTA "gritada" (palavras com 4+ letras maiúsculas seguidas);
+        // preserva siglas como R.E.M., AC/DC, U2, BTS.
+        if (s === s.toUpperCase() && /[A-ZÀ-Ú]{4,}/.test(s)) {
             return s.toLowerCase().replace(/(?:^|\s|\(|\[|-)([a-zà-ú])/g, (m) => m.toUpperCase());
         }
-        return s;
+        return s.charAt(0).toUpperCase() + s.slice(1);
     }
 
     /* ======================================================================
@@ -496,6 +511,7 @@ class YTMusicV3Applet extends Applet.Applet {
                 this._syncPositionNow();
                 this._updateWindowButtonLabel();
                 this.menu.open(true);
+                this._scheduleOnce(40, () => this._updateProgressUI());
             }
             return GLib.SOURCE_REMOVE;
         });
@@ -535,16 +551,22 @@ class YTMusicV3Applet extends Applet.Applet {
                 this._ytmIconBtn.remove_style_class_name("ytm-panel-icon-pulse");
             }
 
-            if (!this._spinTimerId) {
-                this._spinTimerId = Mainloop.timeout_add(33, () => {
-                    this._spinAngle = (this._spinAngle + 1.6) % 360;
-                    if (this.iconAnimation === "spin" || !this.iconAnimation) {
+            const shouldSpin = (this.iconAnimation === "spin" || !this.iconAnimation);
+            if (shouldSpin) {
+                if (!this._spinTimerId) {
+                    this._spinTimerId = Mainloop.timeout_add(33, () => {
+                        this._spinAngle = (this._spinAngle + 1.6) % 360;
                         this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, this._spinAngle);
-                    } else {
-                        this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, 0);
-                    }
-                    return GLib.SOURCE_CONTINUE;
-                });
+                        return GLib.SOURCE_CONTINUE;
+                    });
+                }
+            } else {
+                if (this._spinTimerId) {
+                    Mainloop.source_remove(this._spinTimerId);
+                    this._spinTimerId = 0;
+                }
+                this._spinAngle = 0;
+                this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, 0);
             }
 
             if (!this._posTimerId) {
@@ -578,8 +600,16 @@ class YTMusicV3Applet extends Applet.Applet {
             if (global.display) {
                 this._windowCreatedSignalId = global.display.connect("window-created", (display, metaWin) => {
                     if (this._isPearMetaWindow(metaWin)) {
-                        this._scheduleOnce(250, () => this._applySkipTaskbarToPear());
-                        this._scheduleOnce(700, () => this._applySkipTaskbarToPear());
+                        this._scheduleOnce(200, () => this._applySkipTaskbarToPear());
+                        this._scheduleOnce(650, () => this._applySkipTaskbarToPear());
+                    }
+                });
+            }
+            if (global.window_manager) {
+                this._windowMapSignalId = global.window_manager.connect("map", (wm, actor) => {
+                    const metaWin = actor && actor.meta_window ? actor.meta_window : null;
+                    if (this._isPearMetaWindow(metaWin)) {
+                        this._scheduleOnce(120, () => this._applySkipTaskbarToPear());
                     }
                 });
             }
@@ -616,9 +646,17 @@ class YTMusicV3Applet extends Applet.Applet {
     _applySkipTaskbarToPear() {
         const action = (this.hideFromCenterTaskbar === false) ? "remove" : "add";
         try {
-            const pattern = PEAR_WM_CLASSES.map(c => c.replace(/\./g, "\\.")).join("|");
-            const cmd = `/bin/bash -c 'for id in $(xdotool search --class "^(${pattern})$" 2>/dev/null); do wmctrl -i -r "$id" -b ${action},skip_taskbar 2>/dev/null; done'`;
-            GLib.spawn_command_line_async(cmd);
+            const windows = global.get_window_actors();
+            for (let i = 0; i < windows.length; i++) {
+                const metaWin = windows[i].get_meta_window();
+                if (this._isPearMetaWindow(metaWin) && metaWin.get_xwindow) {
+                    const xid = metaWin.get_xwindow();
+                    if (xid) {
+                        const hexId = "0x" + xid.toString(16);
+                        GLib.spawn_command_line_async(`wmctrl -i -r ${hexId} -b ${action},skip_taskbar`);
+                    }
+                }
+            }
         } catch (_) {}
     }
 
@@ -726,8 +764,11 @@ class YTMusicV3Applet extends Applet.Applet {
                             }
                             this._applySkipTaskbarToPear();
                             try {
+                                const nowRaise = global.get_current_time();
+                                const ws = w.get_workspace();
+                                if (ws) ws.activate(nowRaise);
                                 w.unminimize();
-                                w.activate(global.get_current_time());
+                                w.activate(nowRaise);
                             } catch (_) {}
                             this._updateWindowButtonLabel();
                         });
@@ -822,6 +863,10 @@ class YTMusicV3Applet extends Applet.Applet {
             this._propsProxy.disconnect(this._propsSignalId);
             this._propsSignalId = 0;
         }
+        if (this._propsProxy && this._playerSignalId) {
+            this._propsProxy.disconnect(this._playerSignalId);
+            this._playerSignalId = 0;
+        }
 
         this._propsProxy = null;
         this._activeBusName = null;
@@ -847,16 +892,42 @@ class YTMusicV3Applet extends Applet.Applet {
                     this._activeBusName = busName;
                     this._bindingBusName = null;
                     this._propsProxy = proxy;
-                    this._propsSignalId = this._propsProxy.connect("g-properties-changed", () => {
-                        this._readPlayerProperties();
+                    this._propsSignalId = this._propsProxy.connect("g-properties-changed", (p, changed) => {
+                        let changedKeys = null;
+                        try {
+                            changedKeys = changed ? Object.keys(changed.deep_unpack()) : null;
+                        } catch (_) {}
+                        this._readPlayerProperties(changedKeys);
                     });
-                    this._readPlayerProperties();
+                    this._playerSignalId = this._propsProxy.connect("g-signal", (p, sender, signalName, params) => {
+                        if (signalName === "Seeked" && params) {
+                            try {
+                                const [pos] = params.deep_unpack();
+                                this._positionUs = Number(pos);
+                                this._updateProgressUI();
+                            } catch (_) {}
+                        }
+                    });
+                    this._readPlayerProperties(null);
+                    this._syncPositionNow();
                 } catch (e) {
                     this._bindingBusName = null;
                     global.logError(`[ytmusic-player] Erro ao conectar proxy assíncrono ${busName}: ${e}`);
                 }
             }
         );
+    }
+
+    _resetCoverAndGlow() {
+        const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
+        const defaultIconUri = GLib.filename_to_uri(defaultIconPath, null);
+        this._albumCoverBin.set_style(
+            `border-radius: 12px; background-image: url("${defaultIconUri}"); background-size: 72px 72px;`
+        );
+        this._popupCard.set_style(null);
+        this._progressFill.set_style(null);
+        this._popupPlayBtn.set_style(null);
+        this._badgePill.set_style(null);
     }
 
     _resetToIdleState() {
@@ -870,21 +941,16 @@ class YTMusicV3Applet extends Applet.Applet {
         this._cachedArtPath = null;
         this._durationUs = 0;
         this._positionUs = 0;
+        this._spinAngle = 0;
+        this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, 0);
 
         // Restaura a capa padrão e limpa o glow inline da faixa anterior
-        const defaultIconPath = GLib.build_filenamev([this.metadata.path, "icons", "ytmusic-vinyl.svg"]);
-        this._albumCoverBin.set_style(
-            `border-radius: 12px; background-image: url("file://${defaultIconPath}"); background-size: cover; background-position: center;`
-        );
-        this._popupCard.set_style(null);
-        this._progressFill.set_style(null);
-        this._popupPlayBtn.set_style(null);
-        this._badgePill.set_style(null);
+        this._resetCoverAndGlow();
 
         this._refreshAllUI();
     }
 
-    _readPlayerProperties() {
+    _readPlayerProperties(changedKeys = null) {
         if (!this._propsProxy || this._destroyed) return;
 
         const statusVar = this._propsProxy.get_cached_property("PlaybackStatus");
@@ -893,14 +959,20 @@ class YTMusicV3Applet extends Applet.Applet {
             this._isPlaying = (this._playbackStatus === "Playing");
         }
 
+        // Pear Desktop não é simétrico: Set(Volume=x) é reportado de volta por uma curva
+        // perceptual (ex.: 0.5 -> 0.20). Ignoramos o eco do nosso próprio Set e
+        // convertemos mudanças externas de volta para a escala do applet.
         const volVar = this._propsProxy.get_cached_property("Volume");
-        if (volVar) {
-            this._volume = volVar.deep_unpack();
+        if (volVar && (GLib.get_monotonic_time() - (this._lastVolSetAt || 0)) > 2000000) {
+            this._volume = this._volumeFromPlayer(Number(volVar.deep_unpack()));
         }
 
-        const posVar = this._propsProxy.get_cached_property("Position");
-        if (posVar) {
-            this._positionUs = Number(posVar.deep_unpack());
+        // Só lê Position do cache se ele veio explicitamente em g-properties-changed
+        if (changedKeys && changedKeys.includes("Position")) {
+            const posVar = this._propsProxy.get_cached_property("Position");
+            if (posVar) {
+                this._positionUs = Number(posVar.deep_unpack());
+            }
         }
 
         let gotTitle = "";
@@ -909,14 +981,24 @@ class YTMusicV3Applet extends Applet.Applet {
             const meta = metaVar.deep_unpack();
 
             if (meta["mpris:trackid"]) {
-                this._trackId = String(meta["mpris:trackid"].deep_unpack());
+                const newTrackId = String(meta["mpris:trackid"].deep_unpack());
+                if (newTrackId !== this._trackId) {
+                    // Nova faixa: o Position do Pear fica congelado até um Seek, então zera localmente
+                    this._positionUs = 0;
+                    this._lastMprisPosUs = null;
+                }
+                this._trackId = newTrackId;
             }
             if (meta["xesam:title"]) {
                 gotTitle = String(meta["xesam:title"].deep_unpack() || "").trim();
                 if (gotTitle.length > 0) {
                     this._title = gotTitle;
                     this._hasActiveTrack = true;
+                } else {
+                    this._hasActiveTrack = false;
                 }
+            } else {
+                this._hasActiveTrack = false;
             }
             if (meta["xesam:artist"]) {
                 const artists = meta["xesam:artist"].deep_unpack();
@@ -942,12 +1024,20 @@ class YTMusicV3Applet extends Applet.Applet {
             if (newArtUrl && newArtUrl !== this._artUrl) {
                 this._artUrl = newArtUrl;
                 this._updateCoverArtAsync(newArtUrl);
+            } else if (!newArtUrl && this._artUrl) {
+                this._artUrl = "";
+                this._cachedArtPath = null;
+                this._resetCoverAndGlow();
             }
         }
 
         if (this._playbackStatus === "Stopped" && !gotTitle) {
             this._resetToIdleState();
             return;
+        }
+
+        if (changedKeys && (changedKeys.includes("PlaybackStatus") || changedKeys.includes("Metadata"))) {
+            this._syncPositionNow();
         }
 
         this._refreshAllUI();
@@ -971,7 +1061,14 @@ class YTMusicV3Applet extends Applet.Applet {
                     try {
                         const reply = conn.call_finish(res);
                         const inner = reply.deep_unpack()[0];
-                        this._positionUs = Number(inner.deep_unpack());
+                        const mprisPos = Number(inner.deep_unpack());
+                        // O Pear só atualiza Position em Seek/TimeChanged; um valor repetido é
+                        // obsoleto e não deve sobrescrever a extrapolação local.
+                        if (this._lastMprisPosUs === null || this._lastMprisPosUs === undefined ||
+                            mprisPos !== this._lastMprisPosUs) {
+                            this._positionUs = mprisPos;
+                        }
+                        this._lastMprisPosUs = mprisPos;
                         this._updateProgressUI();
                     } catch (_) {}
                 }
@@ -1025,13 +1122,38 @@ class YTMusicV3Applet extends Applet.Applet {
     }
 
     _applyLocalCoverFile(filePath) {
-        this._cachedArtPath = filePath;
+        let displayPath = filePath;
+        try {
+            // Crop central 1:1 para evitar distorção em thumbnails 16:9 do YouTube Music
+            const orig = GdkPixbuf.Pixbuf.new_from_file(filePath);
+            const w = orig.get_width();
+            const h = orig.get_height();
+            if (w > 0 && h > 0) {
+                const sqPath = filePath + "_sq.png";
+                if (!GLib.file_test(sqPath, GLib.FileTest.EXISTS)) {
+                    const side = Math.min(w, h);
+                    const x = Math.floor((w - side) / 2);
+                    const y = Math.floor((h - side) / 2);
+                    const cropped = orig.new_subpixbuf(x, y, side, side);
+                    const scaled = cropped.scale_simple(144, 144, GdkPixbuf.InterpType.BILINEAR);
+                    if (scaled) {
+                        scaled.savev(sqPath, "png", [], []);
+                    }
+                }
+                if (GLib.file_test(sqPath, GLib.FileTest.EXISTS)) {
+                    displayPath = sqPath;
+                }
+            }
+        } catch (_) {}
+
+        this._cachedArtPath = displayPath;
+        const coverUri = GLib.filename_to_uri(displayPath, null);
         this._albumCoverBin.set_style(
-            `border-radius: 12px; background-image: url("file://${filePath}"); background-size: cover; background-position: center;`
+            `border-radius: 12px; background-image: url("${coverUri}"); background-size: 72px 72px;`
         );
 
         try {
-            const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(filePath, 16, 16, false);
+            const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(displayPath, 16, 16, false);
             const pixels = pixbuf.get_pixels();
             const nChannels = pixbuf.get_n_channels();
             let rSum = 0, gSum = 0, bSum = 0, count = 0;
@@ -1059,21 +1181,29 @@ class YTMusicV3Applet extends Applet.Applet {
     }
 
     _applyDynamicGlow(r, g, b) {
-        const darkR = Math.round(r * 0.22);
-        const darkG = Math.round(g * 0.22);
-        const darkB = Math.round(b * 0.22);
+        const darkR = Math.round(r * 0.24);
+        const darkG = Math.round(g * 0.24);
+        const darkB = Math.round(b * 0.24);
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const playFg = lum > 145 ? "#09090b" : "#ffffff";
 
         this._popupCard.set_style(`
-            background-gradient-direction: vertical;
+            background-gradient-direction: radial;
             background-gradient-start: rgba(${darkR}, ${darkG}, ${darkB}, 0.96);
             background-gradient-end: rgba(10, 10, 14, 0.99);
             border: 1px solid rgba(${r}, ${g}, ${b}, 0.42);
             box-shadow: 0 14px 36px rgba(0, 0, 0, 0.78);
         `);
+        if (this._cachedArtPath) {
+            const coverUri = GLib.filename_to_uri(this._cachedArtPath, null);
+            this._albumCoverBin.set_style(
+                `border-radius: 12px; background-image: url("${coverUri}"); background-size: 72px 72px; box-shadow: 0 0 18px rgba(${r}, ${g}, ${b}, 0.45);`
+            );
+        }
         this._progressFill.set_style(`background-color: rgb(${r}, ${g}, ${b}); border-radius: 999px;`);
         this._popupPlayBtn.set_style(`
             background-color: rgb(${r}, ${g}, ${b});
-            color: #09090b;
+            color: ${playFg};
             box-shadow: 0 4px 14px rgba(${r}, ${g}, ${b}, 0.55);
         `);
         this._badgePill.set_style(`
@@ -1120,7 +1250,12 @@ class YTMusicV3Applet extends Applet.Applet {
         const ratio = Math.max(0, Math.min(1, (stageX - actorX) / width));
         const targetUs = Math.floor(ratio * this._durationUs);
         this._positionUs = targetUs;
+        this._lastMprisPosUs = targetUs;
         this._updateProgressUI();
+
+        const validTrackId = (this._trackId && /^\/[A-Za-z0-9_\/]+$/.test(this._trackId))
+            ? this._trackId
+            : "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 
         try {
             Gio.DBus.session.call(
@@ -1128,7 +1263,7 @@ class YTMusicV3Applet extends Applet.Applet {
                 MPRIS_PATH,
                 "org.mpris.MediaPlayer2.Player",
                 "SetPosition",
-                new GLib.Variant("(ox)", [this._trackId || "/org/mpris/MediaPlayer2/TrackList/NoTrack", targetUs]),
+                new GLib.Variant("(ox)", [validTrackId, targetUs]),
                 null,
                 Gio.DBusCallFlags.NONE,
                 1000,
@@ -1138,16 +1273,46 @@ class YTMusicV3Applet extends Applet.Applet {
         } catch (_) {}
     }
 
+    _volumeFromPlayer(reported) {
+        // Inversa medida ao vivo no Pear Desktop 3.12.1 (Set x -> Get y)
+        const pts = [[0, 0], [0.02, 0.1], [0.08, 0.3], [0.2, 0.5], [0.4, 0.7], [0.74, 0.9], [1, 1]];
+        const y = Math.max(0, Math.min(1, reported || 0));
+        for (let i = 1; i < pts.length; i++) {
+            const [y0, x0] = pts[i - 1];
+            const [y1, x1] = pts[i];
+            if (y <= y1) {
+                const t = (y1 - y0) > 0 ? (y - y0) / (y1 - y0) : 0;
+                return Math.round((x0 + t * (x1 - x0)) * 100) / 100;
+            }
+        }
+        return 1;
+    }
+
+    _formatVolumeText(vol) {
+        const pct = Math.round(Math.max(0, Math.min(1, vol ?? 1)) * 100);
+        return `${pct === 0 ? "🔇" : "🔊"} ${pct}%`;
+    }
+
     _onScrollVolume(event) {
-        if (!this._activeBusName || !this._hasActiveTrack) return;
+        if (!this._activeBusName) return;
         const dir = event.get_scroll_direction();
         let delta = 0;
-        if (dir === Clutter.ScrollDirection.UP) delta = 0.05;
-        else if (dir === Clutter.ScrollDirection.DOWN) delta = -0.05;
-        else return;
+        if (dir === Clutter.ScrollDirection.UP) {
+            delta = 0.05;
+        } else if (dir === Clutter.ScrollDirection.DOWN) {
+            delta = -0.05;
+        } else if (dir === Clutter.ScrollDirection.SMOOTH) {
+            const [, dy] = event.get_scroll_delta();
+            if (dy < 0) delta = 0.05;
+            else if (dy > 0) delta = -0.05;
+            else return;
+        } else {
+            return;
+        }
 
-        this._volume = Math.max(0, Math.min(1, this._volume + delta));
-        this._volumeLabel.set_text(`🔊 ${Math.round(this._volume * 100)}%`);
+        this._volume = Math.round(Math.max(0, Math.min(1, (this._volume ?? 1) + delta)) * 100) / 100;
+        this._lastVolSetAt = GLib.get_monotonic_time();
+        this._volumeLabel.set_text(this._formatVolumeText(this._volume));
 
         try {
             Gio.DBus.session.call(
@@ -1164,7 +1329,13 @@ class YTMusicV3Applet extends Applet.Applet {
                 Gio.DBusCallFlags.NONE,
                 1000,
                 null,
-                null
+                (conn, res) => {
+                    try {
+                        conn.call_finish(res);
+                    } catch (e) {
+                        global.logError(`[ytmusic-player] Erro ao ajustar Volume: ${e}`);
+                    }
+                }
             );
         } catch (_) {}
     }
@@ -1193,7 +1364,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._titleLabel.set_text(this._formatTitleCase(this._title));
         this._artistLabel.set_text(this._formatTitleCase(this._artist));
         this._albumLabel.set_text(this._formatTitleCase(this._album));
-        this._volumeLabel.set_text(`🔊 ${Math.round((this._volume ?? 1) * 100)}%`);
+        this._volumeLabel.set_text(this._formatVolumeText(this._volume));
 
         this._updateWindowButtonLabel();
         this._updateBarCollapseState();
@@ -1216,8 +1387,14 @@ class YTMusicV3Applet extends Applet.Applet {
         if (this._windowCreatedSignalId && global.display) {
             global.display.disconnect(this._windowCreatedSignalId);
         }
+        if (this._windowMapSignalId && global.window_manager) {
+            global.window_manager.disconnect(this._windowMapSignalId);
+        }
         if (this._propsProxy && this._propsSignalId) {
             this._propsProxy.disconnect(this._propsSignalId);
+        }
+        if (this._propsProxy && this._playerSignalId) {
+            this._propsProxy.disconnect(this._playerSignalId);
         }
         if (this.menu) {
             this.menu.destroy();
