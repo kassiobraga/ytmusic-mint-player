@@ -209,13 +209,13 @@ class YTMusicV3Applet extends Applet.Applet {
         });
         this._panelNextBtn.connect("clicked", () => this._sendMprisCommand("Next"));
 
-        this._controlsBox.add_actor(this._divider);
-        this._controlsBox.add_actor(this._panelPrevBtn);
-        this._controlsBox.add_actor(this._panelPlayBtn);
-        this._controlsBox.add_actor(this._panelNextBtn);
+        this._controlsBox.add(this._divider, { y_fill: false, y_align: St.Align.MIDDLE });
+        this._controlsBox.add(this._panelPrevBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        this._controlsBox.add(this._panelPlayBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        this._controlsBox.add(this._panelNextBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
 
-        this._panelCard.add_actor(this._ytmIconBtn);
-        this._panelCard.add_actor(this._controlsBox);
+        this._panelCard.add(this._ytmIconBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        this._panelCard.add(this._controlsBox, { y_fill: false, y_align: St.Align.MIDDLE });
 
         this.actor.add_actor(this._panelCard);
 
@@ -417,9 +417,9 @@ class YTMusicV3Applet extends Applet.Applet {
         const ctrlsBox = new St.BoxLayout({
             vertical: false,
             x_expand: true,
-            x_align: Clutter.ActorAlign.END,
+            x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
-            style: "spacing: 10px;"
+            style: "spacing: 8px;"
         });
 
         this._popupPrevBtn = new St.Button({
@@ -427,7 +427,7 @@ class YTMusicV3Applet extends Applet.Applet {
             reactive: true,
             child: new St.Icon({
                 icon_name: "media-skip-backward-symbolic",
-                icon_size: 14,
+                icon_size: 13,
                 icon_type: St.IconType.SYMBOLIC
             })
         });
@@ -435,7 +435,7 @@ class YTMusicV3Applet extends Applet.Applet {
 
         this._popupPlayIcon = new St.Icon({
             icon_name: "media-playback-start-symbolic",
-            icon_size: 17,
+            icon_size: 15,
             icon_type: St.IconType.SYMBOLIC
         });
         this._popupPlayBtn = new St.Button({
@@ -450,95 +450,75 @@ class YTMusicV3Applet extends Applet.Applet {
             reactive: true,
             child: new St.Icon({
                 icon_name: "media-skip-forward-symbolic",
-                icon_size: 14,
+                icon_size: 13,
                 icon_type: St.IconType.SYMBOLIC
             })
         });
         this._popupNextBtn.connect("clicked", () => this._sendMprisCommand("Next"));
 
-        ctrlsBox.add_actor(this._popupPrevBtn);
-        ctrlsBox.add_actor(this._popupPlayBtn);
-        ctrlsBox.add_actor(this._popupNextBtn);
+        // y_fill: false garante círculos perfeitos (28x28 e 34x34), nunca ovais!
+        ctrlsBox.add(this._popupPrevBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        ctrlsBox.add(this._popupPlayBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        ctrlsBox.add(this._popupNextBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
 
-        footerRow.add_actor(this._openAppBtn);
-        footerRow.add_actor(ctrlsBox);
-
-        // Linha de volume dedicada (apenas dentro da janelinha hover: Mutar, -, Barra, +, %)
-        const volumeRow = new St.BoxLayout({
-            style_class: "ytm-volume-row",
+        // Cápsula minimalista de volume no próprio rodapé (Mutar, −, %, +)
+        const volPill = new St.BoxLayout({
+            style_class: "ytm-vol-pill",
             vertical: false,
             y_align: Clutter.ActorAlign.CENTER
         });
 
         this._muteIcon = new St.Icon({
             icon_name: "audio-volume-high-symbolic",
-            icon_size: 14,
+            icon_size: 12,
             icon_type: St.IconType.SYMBOLIC
         });
         this._muteBtn = new St.Button({
-            style_class: "ytm-vol-btn",
+            style_class: "ytm-vol-mini-btn",
             reactive: true,
             child: this._muteIcon
         });
         this._muteBtn.connect("clicked", () => this._toggleMute());
 
         this._volDownBtn = new St.Button({
-            style_class: "ytm-vol-btn",
+            style_class: "ytm-vol-mini-btn",
             reactive: true,
             child: new St.Icon({
                 icon_name: "list-remove-symbolic",
-                icon_size: 12,
+                icon_size: 10,
                 icon_type: St.IconType.SYMBOLIC
             })
         });
         this._volDownBtn.connect("clicked", () => this._adjustVolume(-0.10));
-
-        this._volTrack = new St.BoxLayout({
-            style_class: "ytm-vol-track",
-            x_expand: true,
-            reactive: true,
-            vertical: false,
-            y_align: Clutter.ActorAlign.CENTER
-        });
-        this._volFill = new St.Widget({
-            style_class: "ytm-vol-fill",
-            width: 0,
-            height: 5,
-            x_expand: false,
-            x_align: Clutter.ActorAlign.START
-        });
-        this._volTrack.add_actor(this._volFill);
-        this._volTrack.connect("button-press-event", (actor, event) => {
-            this._onVolumeBarClick(actor, event);
-            return Clutter.EVENT_STOP;
-        });
-
-        this._volUpBtn = new St.Button({
-            style_class: "ytm-vol-btn",
-            reactive: true,
-            child: new St.Icon({
-                icon_name: "list-add-symbolic",
-                icon_size: 12,
-                icon_type: St.IconType.SYMBOLIC
-            })
-        });
-        this._volUpBtn.connect("clicked", () => this._adjustVolume(0.10));
 
         this._volumeLabel = new St.Label({
             style_class: "ytm-volume-chip",
             text: "100%"
         });
 
-        volumeRow.add_actor(this._muteBtn);
-        volumeRow.add_actor(this._volDownBtn);
-        volumeRow.add_actor(this._volTrack);
-        volumeRow.add_actor(this._volUpBtn);
-        volumeRow.add_actor(this._volumeLabel);
+        this._volUpBtn = new St.Button({
+            style_class: "ytm-vol-mini-btn",
+            reactive: true,
+            child: new St.Icon({
+                icon_name: "list-add-symbolic",
+                icon_size: 10,
+                icon_type: St.IconType.SYMBOLIC
+            })
+        });
+        this._volUpBtn.connect("clicked", () => this._adjustVolume(0.10));
+
+        volPill.add(this._muteBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        volPill.add(this._volDownBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        volPill.add(this._volumeLabel, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        volPill.add(this._volUpBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+
+        footerRow.add(this._openAppBtn, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
+        footerRow.add(ctrlsBox, { expand: true, x_fill: true, y_fill: false, y_align: St.Align.MIDDLE });
+        footerRow.add(volPill, { x_fill: false, y_fill: false, y_align: St.Align.MIDDLE });
 
         this._popupCard.add_actor(headerRow);
         this._popupCard.add_actor(progressRow);
         this._popupCard.add_actor(footerRow);
-        this._popupCard.add_actor(volumeRow);
 
         const customSection = new PopupMenu.PopupBaseMenuItem({
             reactive: false,
@@ -734,7 +714,7 @@ class YTMusicV3Applet extends Applet.Applet {
     _updateWindowButtonLabel() {
         const metaWin = this._findPearMetaWindow();
         if (metaWin && !metaWin.minimized) {
-            this._openAppBtn.set_label("🗕 Ocultar na barra");
+            this._openAppBtn.set_label("🗕 Ocultar");
         } else {
             this._openAppBtn.set_label("↗ Abrir player");
         }
@@ -1378,9 +1358,9 @@ class YTMusicV3Applet extends Applet.Applet {
             else if (v < 0.7) iconName = "audio-volume-medium-symbolic";
             this._muteIcon.set_icon_name(iconName);
         }
-        if (this._volTrack && this._volFill) {
-            const w = this._volTrack.get_width() || 140;
-            this._volFill.set_width(Math.round(w * v));
+        if (this._muteBtn) {
+            if (v <= 0.001) this._muteBtn.add_style_class_name("ytm-vol-muted");
+            else this._muteBtn.remove_style_class_name("ytm-vol-muted");
         }
     }
 
