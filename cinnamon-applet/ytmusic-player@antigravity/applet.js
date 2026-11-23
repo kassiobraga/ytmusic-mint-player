@@ -92,6 +92,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._durationUs = 0;
         this._positionUs = 0;
         this._volume = 1.0;
+        this._volumeBeforeMute = 1.0;
         this._lastVolSetAt = 0;
         this._lastMprisPosUs = null;
 
@@ -416,7 +417,7 @@ class YTMusicV3Applet extends Applet.Applet {
         const ctrlsBox = new St.BoxLayout({
             vertical: false,
             x_expand: true,
-            x_align: Clutter.ActorAlign.CENTER,
+            x_align: Clutter.ActorAlign.END,
             y_align: Clutter.ActorAlign.CENTER,
             style: "spacing: 10px;"
         });
@@ -459,18 +460,85 @@ class YTMusicV3Applet extends Applet.Applet {
         ctrlsBox.add_actor(this._popupPlayBtn);
         ctrlsBox.add_actor(this._popupNextBtn);
 
-        this._volumeLabel = new St.Label({
-            style_class: "ytm-volume-chip",
-            text: "🔊 100%"
-        });
-
         footerRow.add_actor(this._openAppBtn);
         footerRow.add_actor(ctrlsBox);
-        footerRow.add_actor(this._volumeLabel);
+
+        // Linha de volume dedicada (apenas dentro da janelinha hover: Mutar, -, Barra, +, %)
+        const volumeRow = new St.BoxLayout({
+            style_class: "ytm-volume-row",
+            vertical: false,
+            y_align: Clutter.ActorAlign.CENTER
+        });
+
+        this._muteIcon = new St.Icon({
+            icon_name: "audio-volume-high-symbolic",
+            icon_size: 14,
+            icon_type: St.IconType.SYMBOLIC
+        });
+        this._muteBtn = new St.Button({
+            style_class: "ytm-vol-btn",
+            reactive: true,
+            child: this._muteIcon
+        });
+        this._muteBtn.connect("clicked", () => this._toggleMute());
+
+        this._volDownBtn = new St.Button({
+            style_class: "ytm-vol-btn",
+            reactive: true,
+            child: new St.Icon({
+                icon_name: "list-remove-symbolic",
+                icon_size: 12,
+                icon_type: St.IconType.SYMBOLIC
+            })
+        });
+        this._volDownBtn.connect("clicked", () => this._adjustVolume(-0.10));
+
+        this._volTrack = new St.BoxLayout({
+            style_class: "ytm-vol-track",
+            x_expand: true,
+            reactive: true,
+            vertical: false,
+            y_align: Clutter.ActorAlign.CENTER
+        });
+        this._volFill = new St.Widget({
+            style_class: "ytm-vol-fill",
+            width: 0,
+            height: 5,
+            x_expand: false,
+            x_align: Clutter.ActorAlign.START
+        });
+        this._volTrack.add_actor(this._volFill);
+        this._volTrack.connect("button-press-event", (actor, event) => {
+            this._onVolumeBarClick(actor, event);
+            return Clutter.EVENT_STOP;
+        });
+
+        this._volUpBtn = new St.Button({
+            style_class: "ytm-vol-btn",
+            reactive: true,
+            child: new St.Icon({
+                icon_name: "list-add-symbolic",
+                icon_size: 12,
+                icon_type: St.IconType.SYMBOLIC
+            })
+        });
+        this._volUpBtn.connect("clicked", () => this._adjustVolume(0.10));
+
+        this._volumeLabel = new St.Label({
+            style_class: "ytm-volume-chip",
+            text: "100%"
+        });
+
+        volumeRow.add_actor(this._muteBtn);
+        volumeRow.add_actor(this._volDownBtn);
+        volumeRow.add_actor(this._volTrack);
+        volumeRow.add_actor(this._volUpBtn);
+        volumeRow.add_actor(this._volumeLabel);
 
         this._popupCard.add_actor(headerRow);
         this._popupCard.add_actor(progressRow);
         this._popupCard.add_actor(footerRow);
+        this._popupCard.add_actor(volumeRow);
 
         const customSection = new PopupMenu.PopupBaseMenuItem({
             reactive: false,
@@ -511,7 +579,10 @@ class YTMusicV3Applet extends Applet.Applet {
                 this._syncPositionNow();
                 this._updateWindowButtonLabel();
                 this.menu.open(true);
-                this._scheduleOnce(40, () => this._updateProgressUI());
+                this._scheduleOnce(40, () => {
+                    this._updateProgressUI();
+                    this._updateVolumeUI();
+                });
             }
             return GLib.SOURCE_REMOVE;
         });
@@ -926,6 +997,7 @@ class YTMusicV3Applet extends Applet.Applet {
         );
         this._popupCard.set_style(null);
         this._progressFill.set_style(null);
+        if (this._volFill) this._volFill.set_style(null);
         this._popupPlayBtn.set_style(null);
         this._badgePill.set_style(null);
     }
@@ -1201,6 +1273,9 @@ class YTMusicV3Applet extends Applet.Applet {
             );
         }
         this._progressFill.set_style(`background-color: rgb(${r}, ${g}, ${b}); border-radius: 999px;`);
+        if (this._volFill) {
+            this._volFill.set_style(`background-color: rgb(${r}, ${g}, ${b}); border-radius: 999px;`);
+        }
         this._popupPlayBtn.set_style(`
             background-color: rgb(${r}, ${g}, ${b});
             color: ${playFg};
@@ -1290,29 +1365,34 @@ class YTMusicV3Applet extends Applet.Applet {
 
     _formatVolumeText(vol) {
         const pct = Math.round(Math.max(0, Math.min(1, vol ?? 1)) * 100);
-        return `${pct === 0 ? "🔇" : "🔊"} ${pct}%`;
+        return `${pct}%`;
     }
 
-    _onScrollVolume(event) {
-        if (!this._activeBusName) return;
-        const dir = event.get_scroll_direction();
-        let delta = 0;
-        if (dir === Clutter.ScrollDirection.UP) {
-            delta = 0.05;
-        } else if (dir === Clutter.ScrollDirection.DOWN) {
-            delta = -0.05;
-        } else if (dir === Clutter.ScrollDirection.SMOOTH) {
-            const [, dy] = event.get_scroll_delta();
-            if (dy < 0) delta = 0.05;
-            else if (dy > 0) delta = -0.05;
-            else return;
-        } else {
-            return;
+    _updateVolumeUI() {
+        const v = Math.max(0, Math.min(1, this._volume ?? 1));
+        this._volumeLabel.set_text(this._formatVolumeText(v));
+        if (this._muteIcon) {
+            let iconName = "audio-volume-high-symbolic";
+            if (v <= 0.001) iconName = "audio-volume-muted-symbolic";
+            else if (v < 0.35) iconName = "audio-volume-low-symbolic";
+            else if (v < 0.7) iconName = "audio-volume-medium-symbolic";
+            this._muteIcon.set_icon_name(iconName);
         }
+        if (this._volTrack && this._volFill) {
+            const w = this._volTrack.get_width() || 140;
+            this._volFill.set_width(Math.round(w * v));
+        }
+    }
 
-        this._volume = Math.round(Math.max(0, Math.min(1, (this._volume ?? 1) + delta)) * 100) / 100;
+    _setVolume(targetVol) {
+        if (!this._activeBusName) return;
+        const clamped = Math.round(Math.max(0, Math.min(1, targetVol)) * 100) / 100;
+        if (clamped > 0) {
+            this._volumeBeforeMute = clamped;
+        }
+        this._volume = clamped;
         this._lastVolSetAt = GLib.get_monotonic_time();
-        this._volumeLabel.set_text(this._formatVolumeText(this._volume));
+        this._updateVolumeUI();
 
         try {
             Gio.DBus.session.call(
@@ -1340,6 +1420,49 @@ class YTMusicV3Applet extends Applet.Applet {
         } catch (_) {}
     }
 
+    _adjustVolume(delta) {
+        this._setVolume((this._volume ?? 1) + delta);
+    }
+
+    _toggleMute() {
+        if ((this._volume ?? 1) > 0.001) {
+            this._volumeBeforeMute = this._volume;
+            this._setVolume(0);
+        } else {
+            this._setVolume(this._volumeBeforeMute > 0.05 ? this._volumeBeforeMute : 0.7);
+        }
+    }
+
+    _onVolumeBarClick(actor, event) {
+        if (!this._activeBusName) return;
+        const [stageX] = event.get_coords();
+        const [actorX] = actor.get_transformed_position();
+        const width = actor.get_width();
+        if (width <= 0) return;
+        const ratio = Math.max(0, Math.min(1, (stageX - actorX) / width));
+        this._setVolume(ratio);
+    }
+
+    _onScrollVolume(event) {
+        if (!this._activeBusName) return;
+        const dir = event.get_scroll_direction();
+        let delta = 0;
+        if (dir === Clutter.ScrollDirection.UP) {
+            delta = 0.05;
+        } else if (dir === Clutter.ScrollDirection.DOWN) {
+            delta = -0.05;
+        } else if (dir === Clutter.ScrollDirection.SMOOTH) {
+            const [, dy] = event.get_scroll_delta();
+            if (dy < 0) delta = 0.05;
+            else if (dy > 0) delta = -0.05;
+            else return;
+        } else {
+            return;
+        }
+
+        this._adjustVolume(delta);
+    }
+
     _formatTime(microSeconds) {
         const totalSec = Math.max(0, Math.floor(microSeconds / 1000000));
         const m = Math.floor(totalSec / 60);
@@ -1364,7 +1487,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._titleLabel.set_text(this._formatTitleCase(this._title));
         this._artistLabel.set_text(this._formatTitleCase(this._artist));
         this._albumLabel.set_text(this._formatTitleCase(this._album));
-        this._volumeLabel.set_text(this._formatVolumeText(this._volume));
+        this._updateVolumeUI();
 
         this._updateWindowButtonLabel();
         this._updateBarCollapseState();
