@@ -43,8 +43,9 @@ const MPRIS_PATH = "/org/mpris/MediaPlayer2";
 const DBUS_NAME = "org.freedesktop.DBus";
 const DBUS_PATH = "/org/freedesktop/DBus";
 
-// WM_CLASS exclusivo do Pear Desktop (th-ch/youtube-music)
+// WM_CLASS exclusivo do nosso app YouTube Music (e fallback Pear Desktop)
 const PEAR_WM_CLASSES = [
+    "ytmusic-mint-app",
     "com.github.th-ch.youtube-music",
     "youtube-music",
     "pear-desktop"
@@ -97,6 +98,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._volumeBeforeMute = 1.0;
         this._lastVolSetAt = 0;
         this._lastMprisPosUs = null;
+        this._isNativeMintApp = false;
 
         this._spinAngle = 0;
         this._spinTimerId = 0;
@@ -1048,6 +1050,7 @@ class YTMusicV3Applet extends Applet.Applet {
                     this._readPlayerProperties(null);
                     this._syncPositionNow();
                     this._grabMediaKeys();
+                    this._detectNativeApp(busName);
                 } catch (e) {
                     this._bindingBusName = null;
                     global.logError(`[ytmusic-player] Erro ao conectar proxy assíncrono ${busName}: ${e}`);
@@ -1415,10 +1418,40 @@ class YTMusicV3Applet extends Applet.Applet {
         } catch (_) {}
     }
 
+    _detectNativeApp(busName) {
+        this._isNativeMintApp = false;
+        if (!busName) return;
+        try {
+            Gio.DBus.session.call(
+                busName,
+                MPRIS_PATH,
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                new GLib.Variant("(ss)", ["org.mpris.MediaPlayer2", "DesktopEntry"]),
+                null,
+                Gio.DBusCallFlags.NONE,
+                500,
+                null,
+                (conn, res) => {
+                    if (this._destroyed) return;
+                    try {
+                        const reply = conn.call_finish(res);
+                        const val = String(reply.deep_unpack()[0].deep_unpack() || "");
+                        this._isNativeMintApp = (val === "ytmusic-mint-app");
+                    } catch (_) {}
+                }
+            );
+        } catch (_) {}
+    }
+
     _volumeFromPlayer(reported) {
+        const y = Math.max(0, Math.min(1, reported || 0));
+        // Nosso app próprio reporta volume 100% linear (simétrico)
+        if (this._isNativeMintApp) {
+            return Math.round(y * 100) / 100;
+        }
         // Inversa medida ao vivo no Pear Desktop 3.12.1 (Set x -> Get y)
         const pts = [[0, 0], [0.02, 0.1], [0.08, 0.3], [0.2, 0.5], [0.4, 0.7], [0.74, 0.9], [1, 1]];
-        const y = Math.max(0, Math.min(1, reported || 0));
         for (let i = 1; i < pts.length; i++) {
             const [y0, x0] = pts[i - 1];
             const [y1, x1] = pts[i];

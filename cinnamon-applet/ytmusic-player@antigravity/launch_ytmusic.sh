@@ -9,7 +9,13 @@
 # ==============================================================================
 set -euo pipefail
 
-# 1. Binário oficial instalado pelo pacote .deb do pear-devs/pear-desktop
+# 0. Nosso app próprio minimalista e endurecido (ytmusic-mint-app)
+if [[ -x "${HOME}/ytmusic-mint-player/desktop-app/run.sh" ]]; then
+    "${HOME}/ytmusic-mint-player/desktop-app/run.sh"
+    exit 0
+fi
+
+# 1. Fallback: binário oficial do Pear Desktop
 if [[ -x "/opt/YouTube Music/youtube-music" ]]; then
     if command -v setsid >/dev/null 2>&1; then
         setsid -f "/opt/YouTube Music/youtube-music" </dev/null >/dev/null 2>&1
