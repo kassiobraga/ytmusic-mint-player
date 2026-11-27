@@ -193,7 +193,7 @@ class YTMusicV3Applet extends Applet.Applet {
 
         this._panelPlayIcon = new St.Icon({
             icon_name: "media-playback-start-symbolic",
-            icon_size: 13,
+            icon_size: 12,
             icon_type: St.IconType.SYMBOLIC
         });
         this._panelPlayBtn = new St.Button({
@@ -653,6 +653,9 @@ class YTMusicV3Applet extends Applet.Applet {
                 Mainloop.source_remove(this._spinTimerId);
                 this._spinTimerId = 0;
             }
+            // Ao pausar/parar, alinha o ícone do YouTube Music retinho em 0° (nunca torto!)
+            this._spinAngle = 0;
+            this._ytmIcon.set_rotation_angle(Clutter.RotateAxis.Z_AXIS, 0);
             if (this._posTimerId) {
                 Mainloop.source_remove(this._posTimerId);
                 this._posTimerId = 0;
@@ -1580,9 +1583,13 @@ class YTMusicV3Applet extends Applet.Applet {
     }
 
     _refreshAllUI() {
-        const iconName = (this._isPlaying && this._hasActiveTrack) ? "media-playback-pause-symbolic" : "media-playback-start-symbolic";
+        const playingNow = (this._isPlaying && this._hasActiveTrack);
+        const iconName = playingNow ? "media-playback-pause-symbolic" : "media-playback-start-symbolic";
         this._panelPlayIcon.set_icon_name(iconName);
         this._popupPlayIcon.set_icon_name(iconName);
+        // Compensação óptica de 1px para o triângulo ▶ ficar perfeitamente centralizado no círculo
+        this._panelPlayIcon.set_style(playingNow ? null : "padding-left: 2px;");
+        this._popupPlayIcon.set_style(playingNow ? null : "padding-left: 2px;");
 
         this._titleLabel.set_text(this._formatTitleCase(this._title));
         this._artistLabel.set_text(this._formatTitleCase(this._artist));

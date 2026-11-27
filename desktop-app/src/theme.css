@@ -144,11 +144,21 @@ ytmusic-player-bar #play-pause-button {
   width: 40px !important;
   height: 40px !important;
   padding: 0 !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
+  margin: 0 6px !important;
+  --iron-icon-width: 22px !important;
+  --iron-icon-height: 22px !important;
   box-shadow: 0 4px 14px rgba(225, 29, 72, 0.45) !important;
   transition: transform 120ms ease, background 140ms ease !important;
+}
+
+ytmusic-player-bar #play-pause-button #button,
+ytmusic-player-bar #play-pause-button button {
+  width: 40px !important;
+  height: 40px !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 
 ytmusic-player-bar #play-pause-button yt-icon,
@@ -159,7 +169,6 @@ ytmusic-player-bar #play-pause-button svg {
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  margin: 0 !important;
 }
 
 ytmusic-player-bar #play-pause-button:hover {
