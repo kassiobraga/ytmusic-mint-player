@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 diag.txt
 *.log
 .DS_Store
