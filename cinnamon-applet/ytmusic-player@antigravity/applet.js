@@ -26,6 +26,7 @@
  * ========================================================================== */
 
 const Applet = imports.ui.applet;
+const Main = imports.ui.main;
 const PopupMenu = imports.ui.popupMenu;
 const Settings = imports.ui.settings;
 const Mainloop = imports.mainloop;
@@ -196,7 +197,7 @@ class YTMusicV3Applet extends Applet.Applet {
             reactive: true,
             child: this._panelPlayIcon
         });
-        this._panelPlayBtn.connect("clicked", () => this._sendMprisCommand("PlayPause"));
+        this._panelPlayBtn.connect("clicked", () => this._sendMprisCommand(this._isPlaying ? "Pause" : "Play"));
 
         this._panelNextBtn = new St.Button({
             style_class: "ytm-panel-btn",
@@ -258,9 +259,22 @@ class YTMusicV3Applet extends Applet.Applet {
      * 2. JANELINHA HOVER (SANS-SERIF + PRIMEIRA LETRA MAIÚSCULA + CAPA FIXA)
      * ====================================================================== */
     _buildHoverPopupUI() {
-        this.menuManager = new PopupMenu.PopupMenuManager(this);
+        // shouldGrab = false: janelinha hover NÃO-MODAL (modalCount=0),
+        // assim cliques nos botões da barrinha (⏮ ⏯ ⏭ e ícone) nunca são engolidos!
+        // E addChrome(doNotAdd:true, affectsInputRegion:true) mantém a janelinha
+        // 100% clicável e com hover ativo no X11 quando aberta!
+        this.menuManager = new PopupMenu.PopupMenuManager(this, false);
         this.menu = new Applet.AppletPopupMenu(this, this.orientation);
         this.menuManager.addMenu(this.menu);
+        try {
+            Main.layoutManager.addChrome(this.menu.actor, {
+                doNotAdd: true,
+                affectsInputRegion: true,
+                affectsStruts: false
+            });
+        } catch (e) {
+            global.logError(`[ytmusic-player] Falha addChrome: ${e}`);
+        }
 
         this.menu.actor.reactive = true;
         this.menu.actor.track_hover = true;
@@ -443,7 +457,7 @@ class YTMusicV3Applet extends Applet.Applet {
             reactive: true,
             child: this._popupPlayIcon
         });
-        this._popupPlayBtn.connect("clicked", () => this._sendMprisCommand("PlayPause"));
+        this._popupPlayBtn.connect("clicked", () => this._sendMprisCommand(this._isPlaying ? "Pause" : "Play"));
 
         this._popupNextBtn = new St.Button({
             style_class: "ytm-popup-ctrl-btn",
@@ -1500,6 +1514,7 @@ class YTMusicV3Applet extends Applet.Applet {
             this._propsProxy.disconnect(this._playerSignalId);
         }
         if (this.menu) {
+            try { Main.layoutManager.untrackChrome(this.menu.actor); } catch (_) {}
             this.menu.destroy();
         }
         this.settings.finalize();
