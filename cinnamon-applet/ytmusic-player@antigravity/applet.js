@@ -1107,8 +1107,9 @@ class YTMusicV3Applet extends Applet.Applet {
         // Pear Desktop não é simétrico: Set(Volume=x) é reportado de volta por uma curva
         // perceptual (ex.: 0.5 -> 0.20). Ignoramos o eco do nosso próprio Set e
         // convertemos mudanças externas de volta para a escala do applet.
+        const volCooldownUs = this._isNativeMintApp ? 150000 : 2000000;
         const volVar = this._propsProxy.get_cached_property("Volume");
-        if (volVar && (GLib.get_monotonic_time() - (this._lastVolSetAt || 0)) > 2000000) {
+        if (volVar && (GLib.get_monotonic_time() - (this._lastVolSetAt || 0)) > volCooldownUs) {
             this._volume = this._volumeFromPlayer(Number(volVar.deep_unpack()));
         }
 

@@ -92,10 +92,16 @@ function readPlayerState(seeked = false) {
     volume = video.muted ? 0 : (Number.isFinite(video.volume) ? video.volume : 1.0);
   }
 
-  // Sincroniza com o slider de volume do YouTube Music quando existir (escala 0..100)
+  // Sincroniza com o slider de volume via atributo ARIA (visível mesmo com contextIsolation: true!)
   const volSlider = document.querySelector("ytmusic-player-bar #volume-slider");
-  if (volSlider && typeof volSlider.value === "number" && !Number.isNaN(volSlider.value)) {
-    volume = Math.max(0, Math.min(1, volSlider.value / 100));
+  if (volSlider) {
+    const ariaVal = volSlider.getAttribute("aria-valuenow");
+    if (ariaVal !== null && ariaVal !== "" && !Number.isNaN(Number(ariaVal))) {
+      volume = Math.max(0, Math.min(1, Number(ariaVal) / 100));
+    }
+  }
+  if (video && video.muted) {
+    volume = 0;
   }
 
   return {
@@ -132,14 +138,24 @@ function emitState(force = false, seeked = false) {
   }
 }
 
+let observedSlider = null;
+
 function attachVideoListeners() {
   const video = getVideo();
-  if (!video || video === trackedVideo) return;
-  trackedVideo = video;
-  for (const ev of ["play", "pause", "ended", "volumechange", "durationchange", "loadedmetadata"]) {
-    video.addEventListener(ev, () => emitState(true, false));
+  if (video && video !== trackedVideo) {
+    trackedVideo = video;
+    for (const ev of ["play", "pause", "ended", "volumechange", "durationchange", "loadedmetadata"]) {
+      video.addEventListener(ev, () => emitState(true, false));
+    }
+    video.addEventListener("seeked", () => emitState(true, true));
   }
-  video.addEventListener("seeked", () => emitState(true, true));
+
+  const slider = document.querySelector("ytmusic-player-bar #volume-slider");
+  if (slider && slider !== observedSlider) {
+    observedSlider = slider;
+    const obs = new MutationObserver(() => emitState(true, false));
+    obs.observe(slider, { attributes: true, attributeFilter: ["aria-valuenow", "value"] });
+  }
 }
 
 function setPlayerVolume(vol) {

@@ -386,9 +386,31 @@ app.whenReady().then(async () => {
       app.quit();
     },
     onCommand: (cmd, arg) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("ytm:command", cmd, arg);
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (cmd === "setVolume" && typeof arg === "number" && Number.isFinite(arg)) {
+        // Executa no Main World do Polymer para mover o #volume-slider visual E atualizar o áudio real
+        const pct = Math.round(Math.max(0, Math.min(1, arg)) * 100);
+        mainWindow.webContents
+          .executeJavaScript(
+            `(() => {
+              const s = document.querySelector("ytmusic-player-bar #volume-slider");
+              const v = document.querySelector("video.html5-main-video") || document.querySelector("video");
+              if (s) {
+                s.value = ${pct};
+                s.dispatchEvent(new Event("value-change", { bubbles: true }));
+                s.dispatchEvent(new Event("immediate-value-change", { bubbles: true }));
+                s.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              if (v) {
+                v.muted = (${pct} === 0);
+                if (${pct} > 0) v.volume = ${pct} / 100;
+              }
+            })();`
+          )
+          .catch(() => {});
+        return;
       }
+      mainWindow.webContents.send("ytm:command", cmd, arg);
     },
   });
 
