@@ -77,6 +77,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._propsSignalId = 0;
         this._playerSignalId = 0;
         this._dbusSignalId = 0;
+        this._mediaKeysSignalId = 0;
         this._windowCreatedSignalId = 0;
         this._windowMapSignalId = 0;
 
@@ -113,6 +114,7 @@ class YTMusicV3Applet extends Applet.Applet {
         this._buildPanelUI();
         this._buildHoverPopupUI();
         this._initDBus();
+        this._initMediaKeys();
         this._initWindowDeduplicator();
         this._updateBarCollapseState();
     }
@@ -659,6 +661,76 @@ class YTMusicV3Applet extends Applet.Applet {
     /* ======================================================================
      * 5. GESTÃO DE JANELA DO PEAR DESKTOP (REABERTURA INFALÍVEL + SKIP_TASKBAR)
      * ====================================================================== */
+    _initMediaKeys() {
+        // Integração nativa com csd-media-keys (teclas físicas de mídia do teclado:
+        // Play/Pause, Stop, Anterior e Próxima — ex.: Logitech G213)
+        try {
+            this._mediaKeysSignalId = Gio.DBus.session.signal_subscribe(
+                "org.gnome.SettingsDaemon",
+                "org.gnome.SettingsDaemon.MediaKeys",
+                "MediaPlayerKeyPressed",
+                "/org/gnome/SettingsDaemon/MediaKeys",
+                null,
+                Gio.DBusSignalFlags.NONE,
+                (conn, sender, path, iface, signal, params) => {
+                    if (this._destroyed) return;
+                    try {
+                        const [app, key] = params.deep_unpack();
+                        if (app !== "ytmusic-player") return;
+                        if (key === "Play") {
+                            this._sendMprisCommand(this._isPlaying ? "Pause" : "Play");
+                        } else if (key === "Pause" || key === "Stop") {
+                            this._sendMprisCommand("Pause");
+                        } else if (key === "Next") {
+                            this._sendMprisCommand("Next");
+                        } else if (key === "Previous") {
+                            this._sendMprisCommand("Previous");
+                        }
+                    } catch (e) {
+                        global.logError(`[ytmusic-player] Erro ao processar tecla de mídia: ${e}`);
+                    }
+                }
+            );
+            this._grabMediaKeys();
+        } catch (e) {
+            global.logError(`[ytmusic-player] Falha _initMediaKeys: ${e}`);
+        }
+    }
+
+    _grabMediaKeys() {
+        try {
+            Gio.DBus.session.call(
+                "org.gnome.SettingsDaemon",
+                "/org/gnome/SettingsDaemon/MediaKeys",
+                "org.gnome.SettingsDaemon.MediaKeys",
+                "GrabMediaPlayerKeys",
+                new GLib.Variant("(su)", ["ytmusic-player", 0]),
+                null,
+                Gio.DBusCallFlags.NONE,
+                1000,
+                null,
+                null
+            );
+        } catch (_) {}
+    }
+
+    _releaseMediaKeys() {
+        try {
+            Gio.DBus.session.call(
+                "org.gnome.SettingsDaemon",
+                "/org/gnome/SettingsDaemon/MediaKeys",
+                "org.gnome.SettingsDaemon.MediaKeys",
+                "ReleaseMediaPlayerKeys",
+                new GLib.Variant("(s)", ["ytmusic-player"]),
+                null,
+                Gio.DBusCallFlags.NONE,
+                1000,
+                null,
+                null
+            );
+        } catch (_) {}
+    }
+
     _initWindowDeduplicator() {
         this._applySkipTaskbarToPear();
         try {
@@ -975,6 +1047,7 @@ class YTMusicV3Applet extends Applet.Applet {
                     });
                     this._readPlayerProperties(null);
                     this._syncPositionNow();
+                    this._grabMediaKeys();
                 } catch (e) {
                     this._bindingBusName = null;
                     global.logError(`[ytmusic-player] Erro ao conectar proxy assíncrono ${busName}: ${e}`);
@@ -1501,6 +1574,11 @@ class YTMusicV3Applet extends Applet.Applet {
         this._oneShotTimers.clear();
 
         if (this._dbusSignalId) Gio.DBus.session.signal_unsubscribe(this._dbusSignalId);
+        if (this._mediaKeysSignalId) {
+            Gio.DBus.session.signal_unsubscribe(this._mediaKeysSignalId);
+            this._mediaKeysSignalId = 0;
+        }
+        this._releaseMediaKeys();
         if (this._windowCreatedSignalId && global.display) {
             global.display.disconnect(this._windowCreatedSignalId);
         }
