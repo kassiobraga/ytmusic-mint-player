@@ -118,9 +118,11 @@ try:
     applets = ast.literal_eval(raw)
     if not any(UUID in entry for entry in applets):
         max_id = max([int(e.split(":")[4]) for e in applets if len(e.split(":")) >= 5 and e.split(":")[4].isdigit()] + [0])
-        applets.append(f"panel1:left:0:{UUID}:{max_id + 1}")
+        new_id = max_id + 1
+        applets.append(f"panel1:left:0:{UUID}:{new_id}")
         formatted = "[" + ", ".join(f"'{a}'" for a in applets) + "]"
         subprocess.check_call(["gsettings", "set", "org.cinnamon", "enabled-applets", formatted])
+        subprocess.call(["gsettings", "set", "org.cinnamon", "next-applet-id", str(new_id + 1)])
         print("   ✅ Applet posicionado na ESQUERDA da barra!")
     else:
         print("   ℹ️  Applet já está ativo na esquerda da barra.")
